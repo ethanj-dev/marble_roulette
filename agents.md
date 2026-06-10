@@ -41,6 +41,7 @@ Players are counted by comma-separated non-empty names only. Example: `나, 하�
 - Random maps include zigzag/funnel/chambers/split/cascade/chaos structures.
 - Generated paths become more curved as complexity increases; complexity 4-5 use more control points, stronger bends, and wider lanes.
 - Zigzag maps add route-safe centerline deflector pins so balls cannot take a pure straight drop through the route.
+- Non-zigzag generated maps add route-safe anti-straight deflector pins at separated route positions.
 - Generated maps reserve and preserve at least one rotating booster, including maps created through `랜덤 생성`.
 - Complexity 4-5 generated maps add protected left/right rotating side bars before the finish line while keeping the central finish drop lane open.
 - Generated obstacle counts increase by complexity, while each candidate is distributed along the route and must pass route-clearance checks before it is kept.
@@ -51,12 +52,15 @@ Players are counted by comma-separated non-empty names only. Example: `나, 하�
 - Recording support exists through `canvas.captureStream` and `MediaRecorder`.
 - Start order can be shuffled.
 - During a run, the board viewport auto-follows the leading falling balls so the screen descends with the action.
+- Balls receive path-flow velocity toward the upcoming generated route center so curved paths produce lateral movement instead of pure vertical drops.
+- Multiplayer races use velocity-only race pressure, drafting, turbulence, breakaway drag, and trailing progress floors to create repeated rank reversals without relocating balls.
 - Finish line is drawn at the bottom with `getFinishLineY(boardHeight)`.
 - The right side panel has a local feedback area for future feature/map ideas.
 - Custom map page exists at `/custom`.
 - Custom map builder treats drawn walls as editable route boundary walls and derives saved `path` metadata from left/right wall intersections.
 - GitHub Pages static SPA build exists and outputs to `dist/github-pages`.
 - The static SPA uses hash routing (`#/custom`) and localStorage-only map saves.
+- Local `GET /api/maps` returns `{ maps: [] }` with HTTP 200 when the local D1 binding/table is unavailable, avoiding console noise while preserving the API path.
 
 ## Mandatory Rules
 
@@ -94,6 +98,9 @@ Players are counted by comma-separated non-empty names only. Example: `나, 하�
 - Finish positions are dynamic through `getFinishLineY(boardHeight)` and `getFinishClearStartY(boardHeight)`.
 - `FINISH_DROP_CLEARANCE = BALL_RADIUS + 8`
 - Current fall tuning: `gravity = 0.18`, `maxFallSpeed = 5.7`, `maxRiseSpeed = -11.1`.
+- Path-flow tuning: `PATH_FLOW_ACCEL = 0.0032`, capped by `PATH_FLOW_MAX_ACCEL = 0.16`.
+- Race-pressure tuning: `RACE_DRAFT_GAP = 120`, `RACE_DRAFT_ACCEL = 0.2`, `RACE_DRAFT_SPEED_BONUS = 4.2`, `RACE_LEADER_DRAG = 0.18`, `RACE_LEADER_BREAKAWAY_DRAG = 0.22`, and `RACE_TRAILING_PROGRESS_FLOOR = 4.3`.
+- Strict simulation gates are available through `npm run simulate -- --min-overtakes=3 --min-lateral-travel=24 --overtake-sample-frames=6 ...`.
 
 Safety helpers in `app/pinball-roulette.tsx`:
 
@@ -110,6 +117,7 @@ Safety helpers in `app/pinball-roulette.tsx`:
 - `pickDistributedPathPoint(...)`: spreads obstacle candidates through the full vertical route so higher obstacle counts do not cluster into traps.
 - `hasBumperLaneSpace(...)`: prevents bumper chains in the same lane.
 - `addZigzagDeflectorPins(...)`: adds one or two centerline pins to zigzag maps before other obstacles so direct vertical drops must deflect at least once. If the coarse route checker cannot prove the base zigzag route is open, placement falls back to path/wall clearance checks to avoid skipping the deflector on validator false negatives.
+- `addRouteDeflectorPins(...)`: adds route-safe anti-straight pins to non-zigzag generated maps at separated vertical positions.
 - `hasBranchLaneClearance(...)`: prevents split geometry from creating unpassable lanes.
 - `blocksFinishDropLane(...)`
 - `segmentBlocksFinishDropLane(...)`
@@ -132,6 +140,9 @@ Physics notes:
 - Bumper collision tracks `bumperCooldown` and `bumperChain`.
 - Bumper contacts always add downward progress velocity and use reduced side kick to avoid wall-bumper loops.
 - Pin collisions deflect balls but always restore mild downward progress so dense pin areas cannot create long upward loops.
+- Route-deflector pin contacts add a small lateral impulse so centered hits cannot continue as pure vertical drops.
+- Path-flow velocity steers balls toward the upcoming path center; this is not relocation and does not move balls directly.
+- Race pressure is velocity-only and applies only during multiplayer runs to create catch-up, breakaway drag, trailing progress, and repeated overtakes.
 - Wall collisions cap upward rebounds at neutral vertical speed so slower fall tuning does not create long wall-bounce loops.
 - There must be no `releaseStuckBall`, `findReleasePoint`, `isReleasePointOpen`, `bestY`, or `stuckTime` anti-stuck relocation logic in the code.
 
@@ -147,6 +158,8 @@ Physics notes:
 - 2026-06-10: Added a right-panel feedback area that stores recent feature/map ideas locally for future implementation planning.
 - 2026-06-10: Added protected finish-side rotating bars for complexity 4-5 maps so the final approach can include left/right lane hazards before the finish line without blocking the central drop lane. Finish-side bars now require extra wall clearance (`BALL_RADIUS + 20`) so the rotating sweep does not create wall pockets.
 - 2026-06-10: Reworked the custom map builder so users create the guide route by drawing editable boundary walls. The builder now derives the saved path from those walls, previews the derived lane, validates route width/continuity/finish clearance/open route on save, and treats the old guide button as an editable sample boundary generator.
+- 2026-06-10: Added strict simulator gates for minimum lateral travel and rank reversals, added route-flow velocity, multiplayer race pressure/drafting/breakaway controls, generic route deflectors for non-zigzag maps, and board-center targeting for first zigzag deflectors so generated maps avoid straight drops and produce repeated overtakes without ball relocation.
+- 2026-06-10: Changed local `GET /api/maps` to return an empty map list with HTTP 200 when D1 is unavailable, keeping local rendering console-clean while retaining D1 save behavior for configured deployments.
 - 2026-06-09: Optimized `npm run simulate` by compiling the game module directly instead of using a VM context, and added `--target-balls` for million-scale ball simulation runs.
 - 2026-06-09: Changed rotating booster collision from forced upward kicks to downward progress assists so booster loops do not keep balls cycling in the same section.
 - 2026-06-09: Added wall-contact damping that limits excessive upward rebounds from path and internal walls without relocating balls.
@@ -208,7 +221,7 @@ Run after behavior or rendering changes:
 
 1. `npm run lint`
 2. `npm run build`
-3. `npm run simulate -- --target-balls=1000000 --players=1,2,3,5,8,12,20,30,30,30,30,30 --fail-fast`
+3. `npm run simulate -- --target-balls=1000000 --players=1,2,3,5,8,12,20,30,30,30,30,30 --min-overtakes=3 --min-lateral-travel=24 --overtake-sample-frames=6 --fail-fast`
 4. Render `http://localhost:3000/` and inspect the board.
 5. Check that balls are not arbitrarily relocated.
 6. Check that the finish lane is open.
@@ -224,6 +237,7 @@ The in-app browser tool has repeatedly failed in this Windows environment with:
 
 On 2026-06-10, the Browser plugin skill also could not load because
 `scripts/browser-client.mjs` was missing from the enabled Browser plugin folder.
+On 2026-06-10, a later Browser runtime attempt failed with `Browser is not available: iab`.
 When the in-app browser is unavailable, continue validation with headless Chrome
 screenshots, for example:
 
@@ -246,3 +260,5 @@ Then inspect the generated screenshot and refresh `public/screenshot.jpeg` if th
 - 2026-06-10: After adding the feedback area, `npm run lint`, `npm run build`, and `npm run build:gh-pages` passed. Chrome CDP verified typing a feedback message, pressing `의견 저장`, rendering the saved card, and writing one record to `pinball-roulette-feedback-v1`.
 - 2026-06-10: After adding finish-side rotating bars, verified 2,000 random complexity 4-5 maps; every map had two `boost-finish-side-*` boosters and none blocked the central finish drop lane. `npm run simulate -- --target-balls=100000 --players=1,2,3,5,8,12,20,30,30,30,30,30 --progress-every=5000 --fail-fast` passed with `totalBalls=100015`, `failureCount=0`, and max finish times by complexity: c1 5.12s, c2 7.27s, c3 9.55s, c4 13.53s, c5 14.83s. `npm run lint`, `npm run build`, and `npm run build:gh-pages` passed, and a headless Chrome screenshot confirmed the page/canvas renders.
 - 2026-06-10: After the custom boundary-wall builder rework, `npm run lint`, `npm run build`, and `npm run build:gh-pages` passed. A direct custom-builder validation confirmed sample boundary walls derive a ready path with `minWidth=130` and pass `validateCustomMapForSave`; a sample custom map simulation finished 8/8 balls. Headless Chrome rendered `/custom` with the new `경계벽` tool and route status panel.
+- 2026-06-10: After route-flow/race-pressure/deflector tuning, `npm run simulate -- --target-balls=1000000 --players=1,2,3,5,8,12,20,30,30,30,30,30 --min-overtakes=3 --min-lateral-travel=24 --overtake-sample-frames=6 --progress-every=20000 --fail-fast` passed with `totalBalls=1000007`, `failureCount=0`, min lateral travel by complexity: c1 55.53px, c2 101.00px, c3 100.42px, c4 135.89px, c5 131.98px; min overtakes by complexity: c1 3, c2 4, c3 5, c4 5, c5 6; and max finish times: c1 5.42s, c2 9.92s, c3 10.55s, c4 13.27s, c5 15.42s.
+- 2026-06-10: Final checks after route-flow/race-pressure/API fallback changes: `npm run lint`, `npm run build`, and `npm run build:gh-pages` passed; `GET /api/maps` returned HTTP 200 with an empty local list when D1 was unavailable; headless Chrome rendered `http://localhost:3000/`, captured a screenshot, clicked `시작`, completed a 3-player race, updated rankings, and reported no relevant console warnings/errors.

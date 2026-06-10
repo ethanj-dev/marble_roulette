@@ -28,6 +28,13 @@ function toRouteErrorMessage(error: unknown) {
   return message;
 }
 
+function isUnavailableReadStore(errorMessage: string) {
+  return (
+    errorMessage.includes("D1 binding `DB` is unavailable") ||
+    errorMessage.includes("saved_maps table is unavailable")
+  );
+}
+
 function serializeRow(row: typeof savedMaps.$inferSelect) {
   return {
     id: row.id,
@@ -52,9 +59,11 @@ export async function GET() {
 
     return Response.json({ maps: rows.map(serializeRow) });
   } catch (error) {
+    const errorMessage = toRouteErrorMessage(error);
+
     return Response.json(
-      { error: toRouteErrorMessage(error), maps: [] },
-      { status: 500 }
+      { error: errorMessage, maps: [] },
+      { status: isUnavailableReadStore(errorMessage) ? 200 : 500 }
     );
   }
 }
