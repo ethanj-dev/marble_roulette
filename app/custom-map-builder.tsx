@@ -14,6 +14,16 @@ import { isStaticSpa } from "./static-spa";
 const BOARD_WIDTH = 430;
 const BOARD_HEIGHT = 1420;
 const STORAGE_KEY = "pinball-roulette-saved-maps-v3";
+const BALL_RADIUS = 10;
+const ROUTE_CLEARANCE = BALL_RADIUS + 10;
+const WALL_TRAP_CLEARANCE = BALL_RADIUS * 2 + 18;
+const BUMPER_WALL_CLEARANCE = BALL_RADIUS * 2 + 20;
+const FINISH_DROP_CLEARANCE = BALL_RADIUS + 8;
+const MIN_CUSTOM_PATH_WIDTH = BALL_RADIUS * 2 + 76;
+const MAX_CUSTOM_PATH_STEP = 96;
+const CUSTOM_PATH_TOP_Y = 88;
+const CUSTOM_PATH_BOTTOM_Y = BOARD_HEIGHT - 132;
+const CUSTOM_PATH_SAMPLE_STEP = 44;
 
 type Point = {
   x: number;
@@ -84,12 +94,19 @@ type DragPreview = {
 };
 
 const TOOL_LABELS: Record<Tool, string> = {
-  wall: "벽",
+  wall: "경계벽",
   pin: "핀",
   bumper: "범퍼",
   exploder: "폭발",
   booster: "회전 막대",
   erase: "삭제",
+};
+
+type PathBuildResult = {
+  path: PathNode[];
+  ready: boolean;
+  message: string;
+  minWidth: number;
 };
 
 const DEFAULT_GUIDE_PATH: PathNode[] = [
@@ -183,7 +200,7 @@ function distanceToSegment(point: Point, segment: Pick<Segment, "x1" | "y1" | "x
 }
 
 function getWallIntersectionsAtY(walls: Segment[], y: number) {
-  return walls
+  const intersections = walls
     .flatMap((wall) => {
       const minY = Math.min(wall.y1, wall.y2);
       const maxY = Math.max(wall.y1, wall.y2);
@@ -197,23 +214,184 @@ function getWallIntersectionsAtY(walls: Segment[], y: number) {
       return [wall.x1 + (wall.x2 - wall.x1) * t];
     })
     .sort((a, b) => a - b);
+
+  return intersections.filter(
+    (x, index) => index === 0 || Math.abs(x - intersections[index - 1]) > 2
+  );
 }
 
-function isPointInsideCustomPath(map: CustomMapLayout, point: Point, margin: number) {
-  const intersections = getWallIntersectionsAtY(map.walls, point.y);
+function getFinishLineY() {
+  return BOARD_HEIGHT - 58;
+}
 
-  if (intersections.length < 2) {
+function getFinishClearStartY() {
+  return BOARD_HEIGHT - 340;
+}
+
+function getPathBandAtY(path: PathNode[], y: number) {
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const current = path[index];
+    const next = path[index + 1];
+    const minY = Math.min(current.y, next.y);
+    const maxY = Math.max(current.y, next.y);
+
+    if (y >= minY && y <= maxY) {
+      const span = next.y - current.y;
+      const t = span === 0 ? 0 : clamp((y - current.y) / span, 0, 1);
+
+      return {
+        x: current.x + (next.x - current.x) * t,
+        width: current.width + (next.width - current.width) * t,
+      };
+    }
+  }
+
+  const nearest = path.reduce((best, point) =>
+    Math.abs(point.y - y) < Math.abs(best.y - y) ? point : best
+  );
+
+  return { x: nearest.x, width: nearest.width };
+}
+
+function buildCustomPathFromWalls(walls: Segment[]): PathBuildResult {
+  if (walls.length < 2) {
+    return {
+      path: [],
+      ready: false,
+      message: "경계벽 2개 이상 필요",
+      minWidth: 0,
+    };
+  }
+
+  const path: PathNode[] = [];
+  let minWidth = Number.POSITIVE_INFINITY;
+  let missingSamples = 0;
+  let narrowSamples = 0;
+  let steepSamples = 0;
+  let previous: PathNode | null = null;
+
+  for (
+    let y = CUSTOM_PATH_TOP_Y;
+    y <= CUSTOM_PATH_BOTTOM_Y;
+    y += CUSTOM_PATH_SAMPLE_STEP
+  ) {
+    const intersections = getWallIntersectionsAtY(walls, y);
+
+    if (intersections.length < 2) {
+      missingSamples += 1;
+      continue;
+    }
+
+    const left = intersections[0];
+    const right = intersections[intersections.length - 1];
+    const width = right - left;
+    const node = {
+      x: (left + right) / 2,
+      y,
+      width,
+    };
+
+    minWidth = Math.min(minWidth, width);
+
+    if (width < MIN_CUSTOM_PATH_WIDTH) {
+      narrowSamples += 1;
+    }
+
+    if (previous && Math.abs(node.x - previous.x) > MAX_CUSTOM_PATH_STEP) {
+      steepSamples += 1;
+    }
+
+    path.push(node);
+    previous = node;
+  }
+
+  if (path[path.length - 1]?.y !== CUSTOM_PATH_BOTTOM_Y) {
+    const intersections = getWallIntersectionsAtY(walls, CUSTOM_PATH_BOTTOM_Y);
+
+    if (intersections.length >= 2) {
+      const left = intersections[0];
+      const right = intersections[intersections.length - 1];
+      path.push({
+        x: (left + right) / 2,
+        y: CUSTOM_PATH_BOTTOM_Y,
+        width: right - left,
+      });
+      minWidth = Math.min(minWidth, right - left);
+    }
+  }
+
+  if (path.length < 6 || missingSamples > 0) {
+    return {
+      path,
+      ready: false,
+      message: "경계벽이 위부터 아래까지 이어져야 함",
+      minWidth: Number.isFinite(minWidth) ? minWidth : 0,
+    };
+  }
+
+  if (narrowSamples > 0) {
+    return {
+      path,
+      ready: false,
+      message: "길 폭이 너무 좁음",
+      minWidth,
+    };
+  }
+
+  if (steepSamples > 0) {
+    return {
+      path,
+      ready: false,
+      message: "가로 꺾임이 너무 큼",
+      minWidth,
+    };
+  }
+
+  return {
+    path,
+    ready: true,
+    message: "경로 준비됨",
+    minWidth,
+  };
+}
+
+function isPointInsidePath(path: PathNode[], point: Point, margin: number) {
+  if (path.length < 2) {
     return false;
   }
 
-  const left = intersections[0];
-  const right = intersections[intersections.length - 1];
+  const band = getPathBandAtY(path, point.y);
+  const halfWidth = Math.max(0, band.width / 2 - margin);
 
-  return point.x >= left + margin && point.x <= right - margin;
+  return Math.abs(point.x - band.x) <= halfWidth;
 }
 
-function isSegmentInsideCustomPath(
-  map: CustomMapLayout,
+function isCircleClearOfWalls(
+  walls: Segment[],
+  circle: Pick<CircleObstacle, "x" | "y" | "radius">,
+  padding: number
+) {
+  return walls.every(
+    (wall) => distanceToSegment(circle, wall) > circle.radius + padding
+  );
+}
+
+function isBoosterClearOfWalls(
+  walls: Segment[],
+  booster: Booster,
+  padding = BALL_RADIUS + 22
+) {
+  const center = {
+    x: (booster.x1 + booster.x2) / 2,
+    y: (booster.y1 + booster.y2) / 2,
+    radius: Math.hypot(booster.x2 - booster.x1, booster.y2 - booster.y1) / 2,
+  };
+
+  return isCircleClearOfWalls(walls, center, padding);
+}
+
+function isSegmentInsidePath(
+  path: PathNode[],
   segment: Pick<Segment, "x1" | "y1" | "x2" | "y2">,
   margin: number
 ) {
@@ -224,7 +402,7 @@ function isSegmentInsideCustomPath(
       y: segment.y1 + (segment.y2 - segment.y1) * t,
     };
 
-    if (!isPointInsideCustomPath(map, point, margin)) {
+    if (!isPointInsidePath(path, point, margin)) {
       return false;
     }
   }
@@ -232,26 +410,200 @@ function isSegmentInsideCustomPath(
   return true;
 }
 
-function isSegmentMostlyInsideCustomPath(
-  map: CustomMapLayout,
-  segment: Pick<Segment, "x1" | "y1" | "x2" | "y2">,
-  margin: number
+function blocksFinishDropLane(
+  path: PathNode[],
+  point: Point,
+  radius: number
 ) {
-  let insideCount = 0;
+  if (point.y < getFinishClearStartY() || point.y > getFinishLineY() + 10) {
+    return false;
+  }
 
-  for (let index = 0; index <= 5; index += 1) {
-    const t = index / 5;
+  const band = getPathBandAtY(path, point.y);
+  return Math.abs(point.x - band.x) < radius + FINISH_DROP_CLEARANCE;
+}
+
+function segmentBlocksFinishDropLane(
+  path: PathNode[],
+  segment: Pick<Segment, "x1" | "y1" | "x2" | "y2">,
+  padding: number
+) {
+  for (let index = 0; index <= 8; index += 1) {
+    const t = index / 8;
     const point = {
       x: segment.x1 + (segment.x2 - segment.x1) * t,
       y: segment.y1 + (segment.y2 - segment.y1) * t,
     };
 
-    if (isPointInsideCustomPath(map, point, margin)) {
-      insideCount += 1;
+    if (blocksFinishDropLane(path, point, padding)) {
+      return true;
     }
   }
 
-  return insideCount >= 5;
+  return false;
+}
+
+function hasFinishDropLane(walls: Segment[], path: PathNode[]) {
+  for (let y = getFinishClearStartY(); y <= getFinishLineY(); y += 24) {
+    const band = getPathBandAtY(path, y);
+    const point = { x: band.x, y };
+
+    if (!isPointInsidePath(path, point, FINISH_DROP_CLEARANCE)) {
+      return false;
+    }
+
+    if (
+      walls.some((wall) => distanceToSegment(point, wall) <= ROUTE_CLEARANCE)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function getCircleRouteClearance(circle: CircleObstacle) {
+  return circle.id.startsWith("pin-")
+    ? BALL_RADIUS + 4
+    : ROUTE_CLEARANCE;
+}
+
+function hasOpenRoute(
+  walls: Segment[],
+  path: PathNode[],
+  circles: CircleObstacle[],
+  boosters: Booster[]
+) {
+  const stepX = 10;
+  const stepY = 16;
+  let reachable: Point[] = [];
+  let started = false;
+
+  for (let y = path[0].y + 26; y <= BOARD_HEIGHT - 64; y += stepY) {
+    const band = getPathBandAtY(path, y);
+    const minX = band.x - band.width / 2 + ROUTE_CLEARANCE;
+    const maxX = band.x + band.width / 2 - ROUTE_CLEARANCE;
+    const nodes: Point[] = [];
+
+    for (let x = minX; x <= maxX; x += stepX) {
+      const point = { x, y };
+
+      if (
+        walls.every((wall) => distanceToSegment(point, wall) > ROUTE_CLEARANCE) &&
+        circles.every(
+          (circle) =>
+            Math.hypot(point.x - circle.x, point.y - circle.y) >
+            circle.radius + getCircleRouteClearance(circle)
+        ) &&
+        boosters.every(
+          (booster) => distanceToSegment(point, booster) > ROUTE_CLEARANCE + 4
+        )
+      ) {
+        nodes.push(point);
+      }
+    }
+
+    if (nodes.length === 0) {
+      if (started) {
+        return false;
+      }
+
+      continue;
+    }
+
+    if (!started) {
+      reachable = nodes;
+      started = true;
+      continue;
+    }
+
+    reachable = nodes.filter((node) =>
+      reachable.some(
+        (previous) =>
+          Math.abs(previous.x - node.x) <= stepX * 1.8 &&
+          Math.abs(previous.y - node.y) <= stepY * 1.2
+      )
+    );
+
+    if (reachable.length === 0) {
+      return false;
+    }
+  }
+
+  return reachable.length > 0;
+}
+
+function validateCustomMapForSave(map: CustomMapLayout, path: PathNode[]) {
+  const pins = map.pins.filter(
+    (pin) =>
+      isPointInsidePath(path, pin, pin.radius + BALL_RADIUS + 8) &&
+      !blocksFinishDropLane(path, pin, pin.radius) &&
+      isCircleClearOfWalls(map.walls, pin, WALL_TRAP_CLEARANCE)
+  );
+  const bumpers = map.bumpers.filter(
+    (bumper) =>
+      isPointInsidePath(path, bumper, bumper.radius + BALL_RADIUS + 10) &&
+      !blocksFinishDropLane(path, bumper, bumper.radius) &&
+      isCircleClearOfWalls(map.walls, bumper, BUMPER_WALL_CLEARANCE)
+  );
+  const exploders = map.exploders.filter(
+    (exploder) =>
+      isPointInsidePath(path, exploder, exploder.radius + BALL_RADIUS + 10) &&
+      !blocksFinishDropLane(path, exploder, exploder.radius) &&
+      isCircleClearOfWalls(map.walls, exploder, WALL_TRAP_CLEARANCE)
+  );
+  const boosters = map.boosters.filter(
+    (booster) =>
+      isSegmentInsidePath(path, booster, BALL_RADIUS + 18) &&
+      !segmentBlocksFinishDropLane(path, booster, 8) &&
+      isBoosterClearOfWalls(map.walls, booster)
+  );
+  const removedObstacleCount =
+    map.pins.length -
+    pins.length +
+    map.bumpers.length -
+    bumpers.length +
+    map.exploders.length -
+    exploders.length +
+    map.boosters.length -
+    boosters.length;
+
+  if (removedObstacleCount > 0) {
+    return {
+      ok: false,
+      message: "장애물이 길/벽/피니시 조건을 벗어남",
+      map,
+    };
+  }
+
+  if (!hasFinishDropLane(map.walls, path)) {
+    return {
+      ok: false,
+      message: "피니시 중앙 길이 막힘",
+      map,
+    };
+  }
+
+  if (!hasOpenRoute(map.walls, path, [...pins, ...bumpers, ...exploders], boosters)) {
+    return {
+      ok: false,
+      message: "위에서 아래까지 열린 길이 없음",
+      map,
+    };
+  }
+
+  return {
+    ok: true,
+    message: "저장 가능",
+    map: {
+      ...map,
+      path,
+      pins,
+      bumpers,
+      exploders,
+      boosters,
+    },
+  };
 }
 
 function removeNearest(map: CustomMapLayout, point: Point): CustomMapLayout {
@@ -324,15 +676,20 @@ function drawGlowLine(
 function drawCustomBoard(
   ctx: CanvasRenderingContext2D,
   map: CustomMapLayout,
+  pathBuild: PathBuildResult,
   preview: DragPreview | null
 ) {
   ctx.clearRect(0, 0, BOARD_WIDTH, BOARD_HEIGHT);
-  ctx.fillStyle = "#252727";
+  const backdrop = ctx.createLinearGradient(0, 0, 0, BOARD_HEIGHT);
+  backdrop.addColorStop(0, "#131726");
+  backdrop.addColorStop(0.5, "#0e1220");
+  backdrop.addColorStop(1, "#0b0e1a");
+  ctx.fillStyle = backdrop;
   ctx.fillRect(0, 0, BOARD_WIDTH, BOARD_HEIGHT);
 
   ctx.save();
-  ctx.globalAlpha = 0.16;
-  ctx.strokeStyle = "#0b191b";
+  ctx.globalAlpha = 0.12;
+  ctx.strokeStyle = "#4a5a8c";
   ctx.lineWidth = 1;
   for (let x = 80; x < BOARD_WIDTH; x += 80) {
     ctx.beginPath();
@@ -348,22 +705,56 @@ function drawCustomBoard(
   }
   ctx.restore();
 
-  ctx.strokeStyle = "#ffe147";
-  ctx.lineWidth = 4;
+  ctx.strokeStyle = "rgba(255, 216, 77, 0.4)";
+  ctx.lineWidth = 2;
   ctx.strokeRect(8, 8, BOARD_WIDTH - 16, BOARD_HEIGHT - 16);
+
+  if (pathBuild.path.length >= 2) {
+    ctx.save();
+    ctx.globalAlpha = pathBuild.ready ? 0.16 : 0.08;
+    ctx.fillStyle = pathBuild.ready ? "#32f7ff" : "#ffcf47";
+    ctx.beginPath();
+    pathBuild.path.forEach((node, index) => {
+      const x = node.x - node.width / 2;
+      if (index === 0) {
+        ctx.moveTo(x, node.y);
+      } else {
+        ctx.lineTo(x, node.y);
+      }
+    });
+    [...pathBuild.path].reverse().forEach((node) => {
+      ctx.lineTo(node.x + node.width / 2, node.y);
+    });
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 0.55;
+    ctx.strokeStyle = pathBuild.ready ? "#32f7ff" : "#ffcf47";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 7]);
+    ctx.beginPath();
+    pathBuild.path.forEach((node, index) => {
+      if (index === 0) {
+        ctx.moveTo(node.x, node.y);
+      } else {
+        ctx.lineTo(node.x, node.y);
+      }
+    });
+    ctx.stroke();
+    ctx.restore();
+  }
 
   ctx.save();
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   for (const wall of map.walls) {
-    ctx.strokeStyle = "#1b1d1d";
+    ctx.strokeStyle = "#1d2336";
     ctx.lineWidth = 16;
     ctx.beginPath();
     ctx.moveTo(wall.x1, wall.y1);
     ctx.lineTo(wall.x2, wall.y2);
     ctx.stroke();
-    ctx.strokeStyle = "#8f9794";
-    ctx.globalAlpha = 0.58;
+    ctx.strokeStyle = "#93a7d8";
+    ctx.globalAlpha = 0.55;
     ctx.lineWidth = 3;
     ctx.stroke();
     ctx.globalAlpha = 1;
@@ -468,6 +859,7 @@ export default function CustomMapBuilder() {
   const [isSaving, setIsSaving] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragStartRef = useRef<Point | null>(null);
+  const pathBuild = useMemo(() => buildCustomPathFromWalls(map.walls), [map.walls]);
 
   const counts = useMemo(
     () => ({
@@ -484,9 +876,9 @@ export default function CustomMapBuilder() {
     const ctx = canvasRef.current?.getContext("2d");
 
     if (ctx) {
-      drawCustomBoard(ctx, map, dragPreview);
+      drawCustomBoard(ctx, map, pathBuild, dragPreview);
     }
-  }, [dragPreview, map]);
+  }, [dragPreview, map, pathBuild]);
 
   const toBoardPoint = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -540,17 +932,41 @@ export default function CustomMapBuilder() {
 
     const segment = { x1: start.x, y1: start.y, x2: end.x, y2: end.y };
 
-    if (tool === "wall" && isSegmentMostlyInsideCustomPath(map, segment, 14)) {
-      setSaveStatus("길 안 단독 벽 금지");
+    if (tool === "wall" && Math.abs(end.y - start.y) < 32) {
+      setSaveStatus("경계벽은 위아래 방향 필요");
       return;
     }
 
-    if (
-      tool === "booster" &&
-      !isSegmentInsideCustomPath(map, segment, 18)
-    ) {
-      setSaveStatus("장애물은 길 안쪽에 배치");
-      return;
+    if (tool === "booster") {
+      if (!pathBuild.ready) {
+        setSaveStatus(pathBuild.message);
+        return;
+      }
+
+      if (!isSegmentInsidePath(pathBuild.path, segment, BALL_RADIUS + 18)) {
+        setSaveStatus("회전 막대는 길 안쪽에 배치");
+        return;
+      }
+
+      if (segmentBlocksFinishDropLane(pathBuild.path, segment, 8)) {
+        setSaveStatus("피니시 중앙 길은 비워두기");
+        return;
+      }
+
+      if (!isBoosterClearOfWalls(map.walls, { ...segment, id: "preview", strength: 9 })) {
+        setSaveStatus("회전 막대가 벽에 너무 가까움");
+        return;
+      }
+    }
+
+    if (tool === "wall") {
+      const isInternalWall =
+        pathBuild.ready && isSegmentInsidePath(pathBuild.path, segment, 14);
+      setSaveStatus(
+        isInternalWall ? "내부 벽은 저장 검증에서 막힐 수 있음" : "경계벽 추가됨"
+      );
+    } else {
+      setSaveStatus("회전 막대 추가됨");
     }
 
     setMap((current) => {
@@ -590,7 +1006,7 @@ export default function CustomMapBuilder() {
 
       return current;
     });
-  }, [map, tool]);
+  }, [map, pathBuild, tool]);
 
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -602,10 +1018,26 @@ export default function CustomMapBuilder() {
       }
 
       if (tool === "pin" || tool === "bumper" || tool === "exploder") {
-        const margin = tool === "pin" ? 12 : tool === "bumper" ? 34 : 32;
+        if (!pathBuild.ready) {
+          setSaveStatus(pathBuild.message);
+          return;
+        }
 
-        if (!isPointInsideCustomPath(map, point, margin)) {
+        const margin = tool === "pin" ? 12 : tool === "bumper" ? 34 : 32;
+        const radius = tool === "pin" ? 3.8 : tool === "bumper" ? 20 : 18;
+        const wallPadding =
+          tool === "bumper" ? BUMPER_WALL_CLEARANCE : WALL_TRAP_CLEARANCE;
+
+        if (!isPointInsidePath(pathBuild.path, point, margin)) {
           setSaveStatus("장애물은 길 안쪽에 배치");
+          return;
+        }
+
+        if (
+          blocksFinishDropLane(pathBuild.path, point, radius) ||
+          !isCircleClearOfWalls(map.walls, { ...point, radius }, wallPadding)
+        ) {
+          setSaveStatus("장애물이 벽/피니시에 너무 가까움");
           return;
         }
 
@@ -617,7 +1049,7 @@ export default function CustomMapBuilder() {
       setDragPreview({ tool, start: point, end: point });
       event.currentTarget.setPointerCapture(event.pointerId);
     },
-    [addCircleObstacle, map, toBoardPoint, tool]
+    [addCircleObstacle, map, pathBuild, toBoardPoint, tool]
   );
 
   const handlePointerMove = useCallback(
@@ -656,19 +1088,32 @@ export default function CustomMapBuilder() {
   const addGuide = useCallback(() => {
     setMap((current) => ({
       ...current,
-      path: DEFAULT_GUIDE_PATH.map((node) => ({ ...node })),
+      path: undefined,
       walls: [...current.walls, ...createGuideWalls()],
     }));
-    setSaveStatus("가이드 추가됨");
+    setSaveStatus("샘플 경계 추가됨");
   }, []);
 
   const saveMap = useCallback(async () => {
+    if (!pathBuild.ready) {
+      setSaveStatus(pathBuild.message);
+      return;
+    }
+
+    const validation = validateCustomMapForSave(map, pathBuild.path);
+
+    if (!validation.ok) {
+      setSaveStatus(validation.message);
+      return;
+    }
+
+    const readyMap = validation.map;
     const payload = {
       name: mapName.trim() || "커스텀 핀볼 맵",
-      seed: map.seed,
-      complexity: map.complexity,
-      structure: map.structure,
-      map,
+      seed: readyMap.seed,
+      complexity: readyMap.complexity,
+      structure: readyMap.structure,
+      map: readyMap,
     };
 
     setIsSaving(true);
@@ -697,7 +1142,7 @@ export default function CustomMapBuilder() {
         seed: payload.seed,
         complexity: payload.complexity,
         structure: "custom",
-        map,
+        map: readyMap,
         createdAt: Date.now(),
         storage: "local",
       };
@@ -706,7 +1151,7 @@ export default function CustomMapBuilder() {
     } finally {
       setIsSaving(false);
     }
-  }, [map, mapName]);
+  }, [map, mapName, pathBuild]);
 
   return (
     <main className="builder-shell">
@@ -760,7 +1205,7 @@ export default function CustomMapBuilder() {
 
           <div className="button-grid">
             <button type="button" onClick={addGuide}>
-              가이드 길
+              샘플 경계
             </button>
             <button type="button" onClick={clearMap}>
               초기화
@@ -788,12 +1233,28 @@ export default function CustomMapBuilder() {
 
         <aside className="builder-panel" aria-label="커스텀 맵 상태">
           <div className="panel-title">
+            <h2>경로</h2>
+            <span>{pathBuild.ready ? "준비" : "미완성"}</span>
+          </div>
+          <dl className="summary-grid">
+            <div>
+              <dt>상태</dt>
+              <dd>{pathBuild.ready ? "OK" : "NO"}</dd>
+            </div>
+            <div>
+              <dt>최소폭</dt>
+              <dd>{pathBuild.minWidth > 0 ? Math.round(pathBuild.minWidth) : "-"}</dd>
+            </div>
+          </dl>
+          <div className="builder-status-line">{pathBuild.message}</div>
+
+          <div className="panel-title">
             <h2>구성</h2>
             <span>{counts.walls + counts.pins + counts.bumpers + counts.exploders + counts.boosters}</span>
           </div>
           <dl className="summary-grid">
             <div>
-              <dt>벽</dt>
+              <dt>경계벽</dt>
               <dd>{counts.walls}</dd>
             </div>
             <div>

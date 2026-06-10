@@ -2,46 +2,46 @@
 > pinball-roulette-map-maker@0.1.0 simulate
 > node scripts/simulate-pinball.cjs --target-balls=1000000 --players=1,2,3,5,8,12,20,30,30,30,30,30 --progress-every=20000 --fail-fast
 
-progress trials=20000/1000 targetBalls=332880/1000000 failures=0 elapsed=437.2s
-progress trials=40000/1000 targetBalls=668520/1000000 failures=0 elapsed=897.8s
+progress trials=20000/1000 targetBalls=332880/1000000 failures=0 elapsed=424.0s
+progress trials=40000/1000 targetBalls=668520/1000000 failures=0 elapsed=853.2s
 {
   "aggregates": {
     "byComplexity": {
       "1": {
         "completed": 11970,
         "failed": 0,
-        "maxSeconds": 5.2,
-        "totalSeconds": 42069.26666666669
+        "maxSeconds": 5.266666666666667,
+        "totalSeconds": 49461.16666666648
       },
       "2": {
         "completed": 11969,
         "failed": 0,
-        "maxSeconds": 7.9,
-        "totalSeconds": 54122.9166666664
+        "maxSeconds": 8.466666666666667,
+        "totalSeconds": 60748.86666666691
       },
       "3": {
         "completed": 11969,
         "failed": 0,
-        "maxSeconds": 12.116666666666667,
-        "totalSeconds": 70995.06666666713
+        "maxSeconds": 10.983333333333333,
+        "totalSeconds": 74870.18333333335
       },
       "4": {
         "completed": 11969,
         "failed": 0,
-        "maxSeconds": 15.133333333333333,
-        "totalSeconds": 92826.26666666711
+        "maxSeconds": 13.116666666666667,
+        "totalSeconds": 92414.78333333366
       },
       "5": {
         "completed": 11969,
         "failed": 0,
-        "maxSeconds": 18.966666666666665,
-        "totalSeconds": 116721.03333333331
+        "maxSeconds": 15.85,
+        "totalSeconds": 112500.51666666582
       }
     },
     "totalBalls": 1000007,
-    "totalFrames": 392045595
+    "totalFrames": 401279049
   },
-  "elapsedSeconds": 1332.57,
+  "elapsedSeconds": 1287.64,
   "failureCount": 0,
   "firstFailures": [],
   "options": {

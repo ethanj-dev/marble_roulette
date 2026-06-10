@@ -14,6 +14,7 @@ import { isStaticSpa } from "./static-spa";
 const BOARD_WIDTH = 430;
 const DEFAULT_BOARD_HEIGHT = 1420;
 const STORAGE_KEY = "pinball-roulette-saved-maps-v3";
+const FEEDBACK_STORAGE_KEY = "pinball-roulette-feedback-v1";
 
 const GENERATED_STRUCTURES = [
   "zigzag",
@@ -125,6 +126,16 @@ type SavedMapRecord = {
   map: MapLayout;
   createdAt: number;
   storage: "d1" | "local";
+};
+
+type FeedbackRecord = {
+  id: string;
+  message: string;
+  mapName: string;
+  seed: number;
+  complexity: number;
+  structure: StructureKind;
+  createdAt: number;
 };
 
 type Telemetry = {
@@ -632,6 +643,7 @@ function makeObstaclesRouteSafe(
       ),
       boosters: current.boosters.filter(
         (booster) =>
+          isProtectedBooster(booster) ||
           Math.max(booster.y1, booster.y2) < getFinishClearStartY(getPathBoardHeight(path))
       ),
     }))
@@ -652,13 +664,14 @@ function makeObstaclesRouteSafe(
       exploders: current.exploders.filter((exploder) => !inNarrowPath(exploder)),
       boosters: current.boosters.filter(
         (booster) =>
+          isProtectedBooster(booster) ||
           !inNarrowPath({
             x: (booster.x1 + booster.x2) / 2,
             y: (booster.y1 + booster.y2) / 2,
           })
       ),
     }),
-    (current) => ({ ...current, boosters: [] }),
+    (current) => ({ ...current, boosters: current.boosters.filter(isProtectedBooster) }),
     (current) => ({ ...current, exploders: [] }),
   ];
 
@@ -694,6 +707,26 @@ function isFinishBumper(bumper: CircleObstacle) {
   return bumper.id.startsWith("finish-bumper");
 }
 
+function isRequiredBooster(booster: Booster) {
+  return booster.id.startsWith("boost-required-");
+}
+
+function isFinishSideBooster(booster: Booster) {
+  return booster.id.startsWith("boost-finish-side-");
+}
+
+function isProtectedBooster(booster: Booster) {
+  return isRequiredBooster(booster) || isFinishSideBooster(booster);
+}
+
+function getBoosterFootprint(booster: Booster): ObstacleFootprint {
+  return {
+    x: (booster.x1 + booster.x2) / 2,
+    y: (booster.y1 + booster.y2) / 2,
+    radius: Math.hypot(booster.x2 - booster.x1, booster.y2 - booster.y1) / 2 + 18,
+  };
+}
+
 function hasBumperLaneSpace(
   candidate: CircleObstacle,
   bumpers: CircleObstacle[]
@@ -704,6 +737,540 @@ function hasBumperLaneSpace(
 
     return verticalGap >= 150 || horizontalGap >= candidate.radius + bumper.radius + 58;
   });
+}
+
+function addRequiredBooster(
+  path: PathNode[],
+  walls: Segment[],
+  pins: CircleObstacle[],
+  bumpers: CircleObstacle[],
+  exploders: CircleObstacle[],
+  boosters: Booster[],
+  obstacleFootprints: ObstacleFootprint[],
+  rng: () => number,
+  level: number,
+  obstacleGap: number
+) {
+  if (boosters.some(isRequiredBooster)) {
+    return;
+  }
+
+  const boardHeight = getPathBoardHeight(path);
+  const minY = path[1].y + 116;
+  const maxY = getFinishClearStartY(boardHeight) - 190;
+  const baseRouteIsOpen = hasOpenRoute(
+    walls,
+    path,
+    [...pins, ...bumpers, ...exploders],
+    boosters
+  );
+
+  for (let attempt = 0; attempt < 48; attempt += 1) {
+    const progress = clamp(0.22 + (attempt % 12) * 0.045 + randomRange(rng, -0.018, 0.018), 0.18, 0.72);
+    const pathIndex = clamp(
+      Math.round(progress * (path.length - 1)),
+      2,
+      path.length - 4
+    );
+    const node = path[pathIndex];
+
+    if (!node) {
+      continue;
+    }
+
+    const centerY = clamp(
+      node.y + randomRange(rng, -28, 48),
+      minY,
+      maxY
+    );
+    const band = getPathBandAtY(path, centerY);
+
+    if (band.width < 126) {
+      continue;
+    }
+
+    const length = clamp(34 + level * 1.4 + randomRange(rng, -2, 4), 34, 43);
+    const halfLength = length / 2;
+    const centerX = constrainXToPath(
+      path,
+      centerY,
+      band.x + randomRange(rng, -16, 16),
+      halfLength + 26
+    );
+    const candidate = {
+      id: "boost-required-0",
+      x1: centerX - halfLength,
+      y1: centerY + 11,
+      x2: centerX + halfLength,
+      y2: centerY - 11 + randomRange(rng, -7, 7),
+      strength: randomRange(rng, 7, 9),
+    };
+    const footprint = getBoosterFootprint(candidate);
+
+    if (!isSegmentInsidePath(path, candidate, 16)) {
+      continue;
+    }
+
+    if (segmentBlocksFinishDropLane(path, candidate, 8)) {
+      continue;
+    }
+
+    if (!isBoosterClearOfWalls(walls, candidate)) {
+      continue;
+    }
+
+    if (!hasObstacleSpace(footprint, obstacleFootprints, Math.max(36, obstacleGap - 18))) {
+      continue;
+    }
+
+    if (
+      baseRouteIsOpen &&
+      !hasOpenRoute(walls, path, [...pins, ...bumpers, ...exploders], [...boosters, candidate])
+    ) {
+      continue;
+    }
+
+    obstacleFootprints.push(footprint);
+    boosters.push(candidate);
+    return;
+  }
+
+  const fallbackNodes = path
+    .slice(2, -4)
+    .filter((node) => node.y >= minY && node.y <= maxY)
+    .sort(
+      (a, b) =>
+        getPathBandAtY(path, b.y).width - getPathBandAtY(path, a.y).width
+    );
+
+  for (const node of fallbackNodes) {
+    const band = getPathBandAtY(path, node.y);
+
+    if (band.width < 108) {
+      continue;
+    }
+
+    const length = clamp(Math.min(36, band.width * 0.28), 28, 36);
+    const halfLength = length / 2;
+    const candidate = {
+      id: "boost-required-0",
+      x1: band.x - halfLength,
+      y1: node.y + 9,
+      x2: band.x + halfLength,
+      y2: node.y - 9,
+      strength: 7.5,
+    };
+    const footprint = getBoosterFootprint(candidate);
+
+    if (!isSegmentInsidePath(path, candidate, 12)) {
+      continue;
+    }
+
+    if (segmentBlocksFinishDropLane(path, candidate, 8)) {
+      continue;
+    }
+
+    if (!isBoosterClearOfWalls(walls, candidate)) {
+      continue;
+    }
+
+    if (!hasObstacleSpace(footprint, obstacleFootprints, Math.max(24, obstacleGap - 32))) {
+      continue;
+    }
+
+    if (
+      baseRouteIsOpen &&
+      !hasOpenRoute(walls, path, [...pins, ...bumpers, ...exploders], [...boosters, candidate])
+    ) {
+      continue;
+    }
+
+    obstacleFootprints.push(footprint);
+    boosters.push(candidate);
+    return;
+  }
+}
+
+function ensureRequiredBoosterAfterPrune(
+  walls: Segment[],
+  path: PathNode[],
+  obstacles: RouteObstacles
+): RouteObstacles {
+  if (obstacles.boosters.length > 0) {
+    return obstacles;
+  }
+
+  const boardHeight = getPathBoardHeight(path);
+  const minY = path[1].y + 116;
+  const maxY = getFinishClearStartY(boardHeight) - 190;
+  const baseRouteIsOpen = routeIsOpen(walls, path, obstacles);
+  const fallbackNodes = path
+    .slice(2, -4)
+    .filter((node) => node.y >= minY && node.y <= maxY)
+    .sort(
+      (a, b) =>
+        getPathBandAtY(path, b.y).width - getPathBandAtY(path, a.y).width
+    );
+
+  for (const node of fallbackNodes) {
+    const band = getPathBandAtY(path, node.y);
+
+    if (band.width < 104) {
+      continue;
+    }
+
+    const preferredLength = clamp(Math.min(34, band.width * 0.26), 26, 34);
+    const lengthOptions = [preferredLength, 30, 26, 22, 18, 14, 10];
+    const tiltOptions = [8, 5, 2, 0];
+
+    for (const length of lengthOptions) {
+      const halfLength = length / 2;
+
+      for (const tilt of tiltOptions) {
+        const candidate = {
+          id: "boost-required-0",
+          x1: band.x - halfLength,
+          y1: node.y + tilt,
+          x2: band.x + halfLength,
+          y2: node.y - tilt,
+          strength: 7.5,
+        };
+        const footprint = getBoosterFootprint(candidate);
+
+        if (!isSegmentInsidePath(path, candidate, 12)) {
+          continue;
+        }
+
+        if (segmentBlocksFinishDropLane(path, candidate, 8)) {
+          continue;
+        }
+
+        if (!isBoosterClearOfWalls(walls, candidate)) {
+          continue;
+        }
+
+        const gap = 16;
+        const circleIsClear = (circle: CircleObstacle) =>
+          Math.hypot(circle.x - footprint.x, circle.y - footprint.y) >=
+          footprint.radius + circle.radius + gap;
+        const next = {
+          pins: obstacles.pins.filter(circleIsClear),
+          bumpers: obstacles.bumpers.filter(circleIsClear),
+          exploders: obstacles.exploders.filter(circleIsClear),
+          boosters: [candidate],
+        };
+
+        if (baseRouteIsOpen && !routeIsOpen(walls, path, next)) {
+          continue;
+        }
+
+        return next;
+      }
+    }
+  }
+
+  return obstacles;
+}
+
+function addFinishSideBoosters(
+  path: PathNode[],
+  walls: Segment[],
+  pins: CircleObstacle[],
+  bumpers: CircleObstacle[],
+  exploders: CircleObstacle[],
+  boosters: Booster[],
+  obstacleFootprints: ObstacleFootprint[],
+  level: number,
+  obstacleGap: number
+) {
+  if (level < 4) {
+    return;
+  }
+
+  const boardHeight = getPathBoardHeight(path);
+  const finishLineY = getFinishLineY(boardHeight);
+  const finishClearStartY = getFinishClearStartY(boardHeight);
+  const yTargets = [finishLineY - 220];
+  const baseRouteIsOpen = hasOpenRoute(
+    walls,
+    path,
+    [...pins, ...bumpers, ...exploders],
+    boosters
+  );
+
+  for (let pairIndex = 0; pairIndex < yTargets.length; pairIndex += 1) {
+    const targetY = clamp(
+      yTargets[pairIndex],
+      finishClearStartY + 44,
+      finishLineY - 118
+    );
+
+    for (const side of [-1, 1]) {
+      const sideName = side < 0 ? "left" : "right";
+      let added = false;
+
+      for (const yOffset of [0, -34, 34, -62, 62]) {
+        const centerY = clamp(
+          targetY + yOffset,
+          finishClearStartY + 34,
+          finishLineY - 96
+        );
+        const band = getPathBandAtY(path, centerY);
+
+        if (band.width < 112) {
+          continue;
+        }
+
+        const lengthOptions = [24, 20, 16, 12, 10, 8, 6];
+        const tiltOptions = [7, 5, 3, 2];
+        const offsetOptions = [
+          clamp(band.width * 0.27, 36, 48),
+          clamp(band.width * 0.25, 34, 44),
+          clamp(band.width * 0.23, 32, 42),
+          42,
+          40,
+          38,
+          36,
+          34,
+          32,
+          30,
+        ];
+
+        for (const length of lengthOptions) {
+          const halfLength = length / 2;
+
+          for (const tilt of tiltOptions) {
+            for (const offset of offsetOptions) {
+              const centerX = band.x + side * offset;
+              const candidate = {
+                id: `boost-finish-side-${pairIndex}-${sideName}`,
+                x1: centerX - halfLength,
+                y1: centerY + tilt,
+                x2: centerX + halfLength,
+                y2: centerY - tilt,
+                strength: 7.5 + (level - 4) * 0.7,
+              };
+              const footprint = getBoosterFootprint(candidate);
+              const sweepRadius =
+                Math.hypot(candidate.x2 - candidate.x1, candidate.y2 - candidate.y1) / 2;
+
+              if (
+                Math.abs(footprint.x - band.x) <=
+                sweepRadius + FINISH_DROP_CLEARANCE + 6
+              ) {
+                continue;
+              }
+
+              if (!isSegmentInsidePath(path, candidate, 12)) {
+                continue;
+              }
+
+              if (segmentBlocksFinishDropLane(path, candidate, 8)) {
+                continue;
+              }
+
+              if (!isBoosterClearOfWalls(walls, candidate, BALL_RADIUS + 20)) {
+                continue;
+              }
+
+              if (!hasObstacleSpace(footprint, obstacleFootprints, Math.max(8, obstacleGap - 44))) {
+                continue;
+              }
+
+              if (
+                baseRouteIsOpen &&
+                !hasOpenRoute(walls, path, [...pins, ...bumpers, ...exploders], [...boosters, candidate])
+              ) {
+                continue;
+              }
+
+              obstacleFootprints.push(footprint);
+              boosters.push(candidate);
+              added = true;
+              break;
+            }
+
+            if (added) {
+              break;
+            }
+          }
+
+          if (added) {
+            break;
+          }
+        }
+
+        if (added) {
+          break;
+        }
+      }
+    }
+  }
+}
+
+function ensureFinishSideBoostersAfterPrune(
+  walls: Segment[],
+  path: PathNode[],
+  obstacles: RouteObstacles,
+  level: number
+): RouteObstacles {
+  if (level < 4) {
+    return obstacles;
+  }
+
+  const boardHeight = getPathBoardHeight(path);
+  const finishLineY = getFinishLineY(boardHeight);
+  const finishClearStartY = getFinishClearStartY(boardHeight);
+  let next = obstacles;
+
+  const findCandidate = (side: -1 | 1, sideName: string) => {
+    const baseRouteIsOpen = routeIsOpen(walls, path, next);
+    const targetY = clamp(
+      finishLineY - 220,
+      finishClearStartY + 44,
+      finishLineY - 118
+    );
+
+    for (const yOffset of [
+      0,
+      -20,
+      20,
+      -34,
+      34,
+      -48,
+      48,
+      -62,
+      62,
+      -76,
+      76,
+      -90,
+      90,
+      -104,
+      104,
+      -118,
+      118,
+      -132,
+      132,
+      -146,
+      146,
+      -160,
+      160,
+      -174,
+      174,
+    ]) {
+      const centerY = clamp(
+        targetY + yOffset,
+        finishClearStartY + 8,
+        finishLineY - 48
+      );
+      const band = getPathBandAtY(path, centerY);
+
+      if (band.width < 68) {
+        continue;
+      }
+
+      const lengthOptions = [24, 20, 16, 12, 10, 8, 6, 4, 2];
+      const tiltOptions = [7, 5, 4, 3, 2, 1];
+      const offsetOptions = [
+        clamp(band.width * 0.31, 38, 56),
+        clamp(band.width * 0.29, 36, 52),
+        clamp(band.width * 0.27, 34, 50),
+        clamp(band.width * 0.25, 32, 46),
+        clamp(band.width * 0.23, 28, 42),
+        56,
+        54,
+        52,
+        50,
+        48,
+        46,
+        44,
+        42,
+        40,
+        38,
+        36,
+        34,
+        32,
+        30,
+        28,
+        26,
+        24,
+        22,
+        20,
+      ];
+
+      for (const length of lengthOptions) {
+        const halfLength = length / 2;
+
+        for (const tilt of tiltOptions) {
+          for (const offset of offsetOptions) {
+            const centerX = band.x + side * offset;
+            const candidate = {
+              id: `boost-finish-side-final-${sideName}`,
+              x1: centerX - halfLength,
+              y1: centerY + tilt,
+              x2: centerX + halfLength,
+              y2: centerY - tilt,
+              strength: 7.5 + (level - 4) * 0.7,
+            };
+            const footprint = getBoosterFootprint(candidate);
+            const sweepRadius =
+              Math.hypot(candidate.x2 - candidate.x1, candidate.y2 - candidate.y1) / 2;
+
+            if (
+              Math.abs(footprint.x - band.x) <=
+              sweepRadius + FINISH_DROP_CLEARANCE + 6
+            ) {
+              continue;
+            }
+
+            if (!isSegmentInsidePath(path, candidate, 8)) {
+              continue;
+            }
+
+            if (segmentBlocksFinishDropLane(path, candidate, 8)) {
+              continue;
+            }
+
+            if (!isBoosterClearOfWalls(walls, candidate, BALL_RADIUS + 20)) {
+              continue;
+            }
+
+            const gap = 8;
+            const circleIsClear = (circle: CircleObstacle) =>
+              Math.hypot(circle.x - footprint.x, circle.y - footprint.y) >=
+              footprint.radius + circle.radius + gap;
+            const candidateObstacles = {
+              pins: next.pins.filter(circleIsClear),
+              bumpers: next.bumpers.filter(circleIsClear),
+              exploders: next.exploders.filter(circleIsClear),
+              boosters: [...next.boosters, candidate],
+            };
+
+            if (baseRouteIsOpen && !routeIsOpen(walls, path, candidateObstacles)) {
+              continue;
+            }
+
+            return candidateObstacles;
+          }
+        }
+      }
+    }
+
+    return next;
+  };
+
+  for (const [side, sideName] of [
+    [-1, "left"],
+    [1, "right"],
+  ] as const) {
+    if (next.boosters.some((booster) => booster.id.includes(`-${sideName}`))) {
+      continue;
+    }
+
+    next = findCandidate(side, sideName);
+  }
+
+  return next;
 }
 
 function addZigzagDeflectorPins(
@@ -1196,6 +1763,31 @@ function generateMap(
     );
   }
 
+  addRequiredBooster(
+    path,
+    walls,
+    pins,
+    bumpers,
+    exploders,
+    boosters,
+    obstacleFootprints,
+    rng,
+    level,
+    obstacleGap
+  );
+
+  addFinishSideBoosters(
+    path,
+    walls,
+    pins,
+    bumpers,
+    exploders,
+    boosters,
+    obstacleFootprints,
+    level,
+    obstacleGap
+  );
+
   const pinClusterCount = level + (level >= 4 ? 1 : 0);
   for (let cluster = 0; cluster < pinClusterCount; cluster += 1) {
     for (let attempt = 0; attempt < 34; attempt += 1) {
@@ -1535,6 +2127,18 @@ function generateMap(
         (booster) => !booster.id.startsWith("finish-kicker-")
       )
     : safeObstacles.boosters;
+  const requiredObstacles = ensureRequiredBoosterAfterPrune(safeWalls, path, {
+    pins: safePins,
+    bumpers: safeBumpers,
+    exploders: safeObstacles.exploders,
+    boosters: safeBoosters,
+  });
+  const finalObstacles = ensureFinishSideBoostersAfterPrune(
+    safeWalls,
+    path,
+    requiredObstacles,
+    level
+  );
 
   return {
     version: 1,
@@ -1544,10 +2148,10 @@ function generateMap(
     height: boardHeight,
     path,
     walls: safeWalls,
-    pins: safePins,
-    bumpers: safeBumpers,
-    exploders: safeObstacles.exploders,
-    boosters: safeBoosters,
+    pins: finalObstacles.pins,
+    bumpers: finalObstacles.bumpers,
+    exploders: finalObstacles.exploders,
+    boosters: finalObstacles.boosters,
   };
 }
 
@@ -1741,8 +2345,8 @@ function stepSimulation(
   onFinish: (entry: RankingEntry) => void,
   pulses: Pulse[]
 ) {
-  const gravity = 0.22;
-  const maxFallSpeed = 7;
+  const gravity = 0.18;
+  const maxFallSpeed = 5.7;
   const maxRiseSpeed = -11.1;
   const maxSideSpeed = 8.4;
   const boardHeight = getBoardHeight(map);
@@ -1788,7 +2392,7 @@ function stepSimulation(
 
     if (wallHit) {
       ball.vx *= 0.92;
-      ball.vy = Math.max(ball.vy, -2.8);
+      ball.vy = Math.max(ball.vy, 0);
     }
 
     for (const booster of map.boosters) {
@@ -1798,7 +2402,7 @@ function stepSimulation(
       );
 
       if (resolveSegmentCollision(ball, rotatingBooster, 1.05, 7)) {
-        ball.vy = Math.max(ball.vy, booster.strength * 0.48);
+        ball.vy = Math.max(ball.vy, booster.strength * 0.43);
         ball.vx +=
           (ball.x - (rotatingBooster.x1 + rotatingBooster.x2) / 2) * 0.012;
         addPulse(pulses, ball.x, ball.y, "#34f6ff", 20, 18);
@@ -1812,7 +2416,7 @@ function stepSimulation(
 
     if (pinHit) {
       ball.vx *= 0.96;
-      ball.vy = Math.max(ball.vy, 0.9);
+      ball.vy = Math.max(ball.vy, 0.78);
     }
 
     for (const bumper of map.bumpers) {
@@ -1825,7 +2429,7 @@ function stepSimulation(
         ball.bumperChain = Math.min(chain, 4);
         ball.bumperCooldown = 72;
         ball.vx += nx * bumper.strength * sideKick;
-        ball.vy = Math.max(ball.vy, 3.1);
+        ball.vy = Math.max(ball.vy, 2.65);
 
         addPulse(pulses, bumper.x, bumper.y, pulseColor, bumper.radius + 14, 20);
       }
@@ -1842,7 +2446,7 @@ function stepSimulation(
         ball.vx += nx * exploder.strength * 0.86 + (Math.random() - 0.5) * 4;
         ball.vy = Math.max(
           ball.vy + Math.max(0, ny) * exploder.strength * 0.35,
-          2.8 + Math.random() * 1.6
+          2.45 + Math.random() * 1.35
         );
         ball.blastCooldown = 36;
         addPulse(pulses, exploder.x, exploder.y, "#ff4f64", exploder.radius + 24, 34);
@@ -1920,7 +2524,7 @@ function drawFinishLine(ctx: CanvasRenderingContext2D, map: MapLayout) {
   ctx.stroke();
 
   ctx.fillStyle = "#fff7b0";
-  ctx.font = "bold 13px Arial, sans-serif";
+  ctx.font = "700 13px Orbitron, Arial, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText("FINISH", BOARD_WIDTH / 2, finishLineY - 14);
   ctx.restore();
@@ -1937,12 +2541,16 @@ function drawBoard(
   const boardHeight = getBoardHeight(map);
 
   ctx.clearRect(0, 0, BOARD_WIDTH, boardHeight);
-  ctx.fillStyle = "#252727";
+  const backdrop = ctx.createLinearGradient(0, 0, 0, boardHeight);
+  backdrop.addColorStop(0, "#131726");
+  backdrop.addColorStop(0.5, "#0e1220");
+  backdrop.addColorStop(1, "#0b0e1a");
+  ctx.fillStyle = backdrop;
   ctx.fillRect(0, 0, BOARD_WIDTH, boardHeight);
 
   ctx.save();
-  ctx.globalAlpha = 0.16;
-  ctx.strokeStyle = "#0b191b";
+  ctx.globalAlpha = 0.12;
+  ctx.strokeStyle = "#4a5a8c";
   ctx.lineWidth = 1;
   for (let x = 80; x < BOARD_WIDTH; x += 80) {
     ctx.beginPath();
@@ -1958,22 +2566,22 @@ function drawBoard(
   }
   ctx.restore();
 
-  ctx.strokeStyle = "#ffe147";
-  ctx.lineWidth = 4;
+  ctx.strokeStyle = "rgba(255, 216, 77, 0.4)";
+  ctx.lineWidth = 2;
   ctx.strokeRect(8, 8, BOARD_WIDTH - 16, boardHeight - 16);
 
   ctx.save();
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   for (const wall of map.walls) {
-    ctx.strokeStyle = "#1b1d1d";
+    ctx.strokeStyle = "#1d2336";
     ctx.lineWidth = 16;
     ctx.beginPath();
     ctx.moveTo(wall.x1, wall.y1);
     ctx.lineTo(wall.x2, wall.y2);
     ctx.stroke();
-    ctx.strokeStyle = "#8f9794";
-    ctx.globalAlpha = 0.58;
+    ctx.strokeStyle = "#93a7d8";
+    ctx.globalAlpha = 0.55;
     ctx.lineWidth = 3;
     ctx.stroke();
     ctx.globalAlpha = 1;
@@ -2095,7 +2703,7 @@ function drawBoard(
     ctx.fill();
     ctx.restore();
 
-    ctx.font = "12px Arial, sans-serif";
+    ctx.font = "600 12px 'Apple SD Gothic Neo', 'Malgun Gothic', Arial, sans-serif";
     ctx.textAlign = "center";
     ctx.fillStyle = ball.color;
     ctx.fillText(normalizeLabel(ball.name, 8), ball.x, ball.y + ball.radius + 14);
@@ -2103,12 +2711,22 @@ function drawBoard(
 
   if (winner) {
     ctx.save();
-    ctx.fillStyle = "rgba(0,0,0,0.62)";
-    ctx.fillRect(BOARD_WIDTH / 2 - 118, 24, 236, 38);
-    ctx.strokeStyle = "#ffe147";
-    ctx.strokeRect(BOARD_WIDTH / 2 - 118, 24, 236, 38);
-    ctx.fillStyle = "#fff7b0";
-    ctx.font = "bold 16px Arial, sans-serif";
+    ctx.fillStyle = "rgba(7, 10, 18, 0.84)";
+    ctx.strokeStyle = "#ffd84d";
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = "rgba(255, 216, 77, 0.5)";
+    ctx.shadowBlur = 18;
+    ctx.beginPath();
+    if (typeof ctx.roundRect === "function") {
+      ctx.roundRect(BOARD_WIDTH / 2 - 118, 24, 236, 38, 12);
+    } else {
+      ctx.rect(BOARD_WIDTH / 2 - 118, 24, 236, 38);
+    }
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.stroke();
+    ctx.fillStyle = "#ffefad";
+    ctx.font = "800 16px 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(`우승 ${normalizeLabel(winner, 14)}`, BOARD_WIDTH / 2, 49);
     ctx.restore();
@@ -2244,6 +2862,45 @@ function writeLocalMaps(records: SavedMapRecord[]) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(records.slice(0, 24)));
 }
 
+function isFeedbackRecord(value: unknown): value is FeedbackRecord {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const record = value as FeedbackRecord;
+  return (
+    typeof record.id === "string" &&
+    typeof record.message === "string" &&
+    record.message.trim().length > 0 &&
+    typeof record.mapName === "string" &&
+    typeof record.seed === "number" &&
+    typeof record.complexity === "number" &&
+    isStructureKind(record.structure) &&
+    typeof record.createdAt === "number"
+  );
+}
+
+function readLocalFeedback(): FeedbackRecord[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(FEEDBACK_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown[]) : [];
+    return parsed.filter(isFeedbackRecord);
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalFeedback(records: FeedbackRecord[]) {
+  window.localStorage.setItem(
+    FEEDBACK_STORAGE_KEY,
+    JSON.stringify(records.slice(0, 12))
+  );
+}
+
 function formatSavedTime(timestamp: number) {
   return new Intl.DateTimeFormat("ko-KR", {
     month: "2-digit",
@@ -2289,6 +2946,9 @@ export default function PinballRoulette() {
   const [savedMaps, setSavedMaps] = useState<SavedMapRecord[]>([]);
   const [saveStatus, setSaveStatus] = useState("저장소 대기");
   const [isSaving, setIsSaving] = useState(false);
+  const [feedbackInput, setFeedbackInput] = useState("");
+  const [feedbackRecords, setFeedbackRecords] = useState<FeedbackRecord[]>([]);
+  const [feedbackStatus, setFeedbackStatus] = useState("의견 대기");
   const [telemetry, setTelemetry] = useState<Telemetry>({ falling: 0, finished: 0 });
   const [recordingEnabled, setRecordingEnabled] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -2461,6 +3121,9 @@ export default function PinballRoulette() {
   useEffect(() => {
     const timerId = window.setTimeout(() => {
       void loadSavedMaps();
+      const records = readLocalFeedback();
+      setFeedbackRecords(records);
+      setFeedbackStatus(records.length > 0 ? "로컬 저장됨" : "의견 대기");
     }, 0);
 
     return () => window.clearTimeout(timerId);
@@ -2544,21 +3207,28 @@ export default function PinballRoulette() {
       if (runningRef.current && stageWrapRef.current) {
         const activeBalls = ballsRef.current.filter((ball) => !ball.finished);
         const boardHeight = getBoardHeight(mapRef.current);
-        const focusY =
+        const averageY =
           activeBalls.length > 0
             ? activeBalls.reduce((sum, ball) => sum + ball.y, 0) / activeBalls.length
             : boardHeight;
+        const leadingY =
+          activeBalls.length > 0
+            ? activeBalls.reduce((maxY, ball) => Math.max(maxY, ball.y), 0)
+            : boardHeight;
+        const focusY = activeBalls.length > 0
+          ? averageY * 0.35 + leadingY * 0.65
+          : boardHeight;
         const maxScroll =
           stageWrapRef.current.scrollHeight - stageWrapRef.current.clientHeight;
         const desiredScroll = clamp(
           (focusY / boardHeight) * stageWrapRef.current.scrollHeight -
-            stageWrapRef.current.clientHeight * 0.42,
+            stageWrapRef.current.clientHeight * 0.26,
           0,
           Math.max(0, maxScroll)
         );
 
         stageWrapRef.current.scrollTop +=
-          (desiredScroll - stageWrapRef.current.scrollTop) * 0.08;
+          (desiredScroll - stageWrapRef.current.scrollTop) * 0.16;
       }
 
       if (now - lastTelemetry > 160) {
@@ -2682,6 +3352,45 @@ export default function PinballRoulette() {
       setIsSaving(false);
     }
   }, [map, mapName]);
+
+  const saveFeedback = useCallback(() => {
+    const message = feedbackInput.trim();
+
+    if (!message) {
+      setFeedbackStatus("내용 필요");
+      return;
+    }
+
+    const record: FeedbackRecord = {
+      id: `feedback-${crypto.randomUUID()}`,
+      message,
+      mapName: mapName.trim() || `${STRUCTURE_LABELS[map.structure]} 맵`,
+      seed: map.seed,
+      complexity: map.complexity,
+      structure: map.structure,
+      createdAt: Date.now(),
+    };
+    const nextRecords = [
+      record,
+      ...feedbackRecords.filter((item) => item.id !== record.id),
+    ].slice(0, 12);
+
+    writeLocalFeedback(nextRecords);
+    setFeedbackRecords(nextRecords);
+    setFeedbackInput("");
+    setFeedbackStatus("로컬 저장됨");
+  }, [feedbackInput, feedbackRecords, map, mapName]);
+
+  const deleteFeedback = useCallback(
+    (recordId: string) => {
+      const nextRecords = feedbackRecords.filter((record) => record.id !== recordId);
+
+      writeLocalFeedback(nextRecords);
+      setFeedbackRecords(nextRecords);
+      setFeedbackStatus(nextRecords.length > 0 ? "로컬 저장됨" : "의견 대기");
+    },
+    [feedbackRecords]
+  );
 
   const loadMap = useCallback(
     (record: SavedMapRecord) => {
@@ -3030,6 +3739,54 @@ export default function PinballRoulette() {
                     type="button"
                     className="delete-button"
                     onClick={() => void deleteMap(record)}
+                  >
+                    삭제
+                  </button>
+                </article>
+              ))
+            )}
+          </div>
+
+          <div className="panel-title">
+            <h2>의견</h2>
+            <span>{feedbackStatus}</span>
+          </div>
+          <textarea
+            className="feedback-input"
+            value={feedbackInput}
+            onChange={(event) => {
+              setFeedbackInput(event.target.value);
+              if (feedbackStatus === "내용 필요") {
+                setFeedbackStatus("작성 중");
+              }
+            }}
+            placeholder="추가하면 좋을 기능이나 맵 아이디어를 적어주세요"
+            maxLength={360}
+          />
+          <button
+            type="button"
+            className="primary-button full-button"
+            disabled={feedbackInput.trim().length === 0}
+            onClick={saveFeedback}
+          >
+            의견 저장
+          </button>
+
+          <div className="feedback-list">
+            {feedbackRecords.length === 0 ? (
+              <div className="empty-state">저장된 의견 없음</div>
+            ) : (
+              feedbackRecords.map((record) => (
+                <article className="feedback-card" key={record.id}>
+                  <p>{record.message}</p>
+                  <span>
+                    {STRUCTURE_LABELS[record.structure]} · {record.complexity} ·{" "}
+                    {formatSavedTime(record.createdAt)}
+                  </span>
+                  <button
+                    type="button"
+                    className="delete-button"
+                    onClick={() => deleteFeedback(record.id)}
                   >
                     삭제
                   </button>

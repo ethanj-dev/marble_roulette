@@ -1,103 +1,185 @@
-# vinext-starter
+# 핀볼 룰렛
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+랜덤으로 생성되는 세로형 핀볼 맵에서 플레이어 공을 떨어뜨려 순위를 정하는 룰렛 게임입니다. 플레이어 이름을 입력하고 시작하면 공들이 같은 높이에서 출발해 핀, 범퍼, 폭발 장애물, 회전 부스터를 지나 피니시 라인까지 내려갑니다.
 
-## Prerequisites
+## 주요 기능
+
+- 쉼표로 구분한 플레이어 이름 입력
+- 플레이어 공 색상 자동 배정
+- 랜덤 맵 생성
+- 난이도 1-5 조절
+- 지그재그, 깔때기, 방 구조, 분기, 계단, 혼돈 구조 지원
+- 랜덤 생성 시 선택한 복잡도 유지
+- 회전 부스터 최소 1개 이상 보장
+- 지그재그 맵의 직하강 방지용 디플렉터 핀
+- 도착 순위 표시
+- `First` 또는 `Last` 기준 우승자 선택
+- 우승 인원 수 설정
+- 출발 순서 셔플
+- 현재 맵 저장 및 불러오기
+- 커스텀 맵 제작 페이지
+- 게임 화면 녹화 지원
+- GitHub Pages용 정적 SPA 빌드 지원
+
+## 게임 방법
+
+1. 왼쪽 `플레이어` 입력창에 이름을 쉼표로 구분해서 입력합니다.
+   - 예: `나, 하나, 둘`
+   - 빈 쉼표 항목은 플레이어로 계산하지 않습니다.
+2. `복잡도` 슬라이더로 맵 난이도를 정합니다.
+3. `구조`를 선택합니다.
+   - `랜덤`을 선택하면 구조만 랜덤으로 뽑고, 현재 복잡도는 유지됩니다.
+4. `랜덤 생성` 또는 `설정 적용`으로 맵을 만듭니다.
+5. 필요하면 `출발 셔플`로 공의 시작 순서를 섞습니다.
+6. `The winner is`에서 우승 기준을 고릅니다.
+   - `First`: 먼저 도착한 플레이어가 우승
+   - `Last`: 늦게 도착한 플레이어가 우승
+7. `시작`을 눌러 공을 떨어뜨립니다.
+8. 오른쪽 패널에서 도착 순위와 우승자를 확인합니다.
+
+게임이 시작되면 화면은 먼저 내려가는 공을 따라 자동으로 아래로 스크롤됩니다.
+
+## 맵과 장애물
+
+랜덤 맵은 세로 경로를 기준으로 생성되며, 공이 임의로 순간이동하지 않도록 경로, 장애물 간격, 벽과의 거리, 피니시 구간을 검사합니다.
+
+장애물 종류:
+
+- 핀: 작은 원형 장애물입니다. 공의 방향을 바꿉니다.
+- 범퍼: 초록색 원형 장애물입니다. 공을 강하게 튕기되 아래쪽 진행을 유지합니다.
+- 폭발 장애물: 붉은 원형 장애물입니다. 좌우 흔들림과 하향 진행을 줍니다.
+- 회전 부스터: 회전하는 막대형 장애물입니다. 공을 아래쪽으로 밀어주는 역할을 합니다.
+
+맵 구조물:
+
+- 좌우 경로 벽
+- 분기 섬
+- 피니시 가이드 레일
+
+## 맵 저장
+
+현재 맵 이름을 입력한 뒤 `맵 저장`을 누르면 저장됩니다.
+
+- 서버/API가 있는 환경에서는 `/api/maps`를 통해 저장을 시도합니다.
+- GitHub Pages 같은 정적 배포 환경에서는 브라우저 `localStorage`에 저장됩니다.
+
+저장된 맵은 오른쪽 패널에서 다시 불러오거나 삭제할 수 있습니다.
+
+## 커스텀 맵
+
+상단의 `커스텀 맵` 버튼으로 커스텀 맵 제작 페이지로 이동할 수 있습니다.
+
+커스텀 맵에서는 직접 가이드 경로와 벽을 만들고 저장할 수 있습니다. 정적 SPA 빌드에서는 `#/custom` 경로를 사용합니다.
+
+## 녹화
+
+`Recording` 옵션을 켜고 게임을 시작하면 캔버스 화면을 녹화합니다. 브라우저가 `MediaRecorder`와 `canvas.captureStream`을 지원해야 합니다.
+
+## 로컬 실행
+
+필요 조건:
 
 - Node.js `>=22.13.0`
 
-## Quick Start
+설치:
 
 ```bash
 npm install
+```
+
+개발 서버 실행:
+
+```bash
 npm run dev
+```
+
+기본 로컬 주소:
+
+```text
+http://localhost:3000/
+```
+
+## 명령어
+
+```bash
+npm run dev
+```
+
+개발 서버를 실행합니다.
+
+```bash
+npm run lint
+```
+
+ESLint 검사를 실행합니다.
+
+```bash
 npm run build
-npm run build:gh-pages
 ```
 
-This starter does not use `wrangler.jsonc`.
-
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm run build:gh-pages`: create a GitHub Pages static SPA in `dist/github-pages`
-- `npm run preview:gh-pages`: preview the GitHub Pages static SPA locally
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## GitHub Pages Static Build
-
-This project keeps the Vinext/Cloudflare build and adds a separate GitHub
-Pages target for browser-only play.
+Vinext 빌드를 검증합니다.
 
 ```bash
 npm run build:gh-pages
 ```
 
-The static output is written to `dist/github-pages`. It includes:
+GitHub Pages용 정적 SPA를 `dist/github-pages`에 생성합니다.
 
-- `index.html` for the main static app
-- `404.html` copied from `index.html` for GitHub Pages SPA fallback
-- `.nojekyll` so Pages serves Vite assets as-is
+```bash
+npm run preview:gh-pages
+```
 
-The static SPA uses hash routing. The custom map builder is available at
-`#/custom`. GitHub Pages does not provide `/api/maps`, so the static build uses
-browser `localStorage` for map saves.
+GitHub Pages 빌드 결과를 로컬에서 미리 봅니다.
 
-If the repository is hosted under a non-root path and assets need an explicit
-base path, build with one of these:
+```bash
+npm run simulate
+```
+
+맵 생성과 물리 동작을 대량 시뮬레이션합니다.
+
+예:
+
+```bash
+npm run simulate -- --target-balls=100000 --players=1,2,3,5,8,12,20,30 --fail-fast
+```
+
+## GitHub Pages 배포
+
+정적 빌드:
+
+```bash
+npm run build:gh-pages
+```
+
+출력 폴더:
+
+```text
+dist/github-pages
+```
+
+정적 빌드는 해시 라우팅을 사용합니다.
+
+- 메인 게임: `#/`
+- 커스텀 맵: `#/custom`
+
+저장된 맵은 서버 API 없이 브라우저 `localStorage`에 보관됩니다.
+
+저장소가 하위 경로에 배포되는 경우:
 
 ```bash
 GITHUB_PAGES_BASE=/repository-name/ npm run build:gh-pages
 ```
 
+PowerShell:
+
 ```powershell
 $env:GITHUB_PAGES_BASE='/repository-name/'; npm run build:gh-pages
 ```
 
-## Learn More
+## 안전/밸런스 기준
 
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+- 공은 생성 맵의 경로 밖으로 나가지 않도록 제한됩니다.
+- 공이 막혔을 때 임의 위치로 순간이동시키지 않습니다.
+- 낮은 난이도는 빠르게 끝나도록 조정되어 있습니다.
+- 모든 난이도에서 마지막 공이 60초를 넘지 않도록 시뮬레이션으로 검증합니다.
+- 피니시 구간에는 중앙 낙하 경로를 유지합니다.

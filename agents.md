@@ -41,6 +41,8 @@ Players are counted by comma-separated non-empty names only. Example: `나, 하�
 - Random maps include zigzag/funnel/chambers/split/cascade/chaos structures.
 - Generated paths become more curved as complexity increases; complexity 4-5 use more control points, stronger bends, and wider lanes.
 - Zigzag maps add route-safe centerline deflector pins so balls cannot take a pure straight drop through the route.
+- Generated maps reserve and preserve at least one rotating booster, including maps created through `랜덤 생성`.
+- Complexity 4-5 generated maps add protected left/right rotating side bars before the finish line while keeping the central finish drop lane open.
 - Generated obstacle counts increase by complexity, while each candidate is distributed along the route and must pass route-clearance checks before it is kept.
 - The `랜덤 생성` button keeps the currently selected complexity and only randomizes the generated structure/seed.
 - Split islands may create branches, but must keep both lanes wider than the ball.
@@ -48,9 +50,11 @@ Players are counted by comma-separated non-empty names only. Example: `나, 하�
 - Winner condition supports `First`, `Last`, and winner count.
 - Recording support exists through `canvas.captureStream` and `MediaRecorder`.
 - Start order can be shuffled.
+- During a run, the board viewport auto-follows the leading falling balls so the screen descends with the action.
 - Finish line is drawn at the bottom with `getFinishLineY(boardHeight)`.
+- The right side panel has a local feedback area for future feature/map ideas.
 - Custom map page exists at `/custom`.
-- Custom guide maps save path metadata when guide walls are added.
+- Custom map builder treats drawn walls as editable route boundary walls and derives saved `path` metadata from left/right wall intersections.
 - GitHub Pages static SPA build exists and outputs to `dist/github-pages`.
 - The static SPA uses hash routing (`#/custom`) and localStorage-only map saves.
 
@@ -89,7 +93,7 @@ Players are counted by comma-separated non-empty names only. Example: `나, 하�
 - `MapLayout.height` stores the generated board height.
 - Finish positions are dynamic through `getFinishLineY(boardHeight)` and `getFinishClearStartY(boardHeight)`.
 - `FINISH_DROP_CLEARANCE = BALL_RADIUS + 8`
-- Current fall tuning: `gravity = 0.22`, `maxFallSpeed = 7`, `maxRiseSpeed = -11.1`.
+- Current fall tuning: `gravity = 0.18`, `maxFallSpeed = 5.7`, `maxRiseSpeed = -11.1`.
 
 Safety helpers in `app/pinball-roulette.tsx`:
 
@@ -98,6 +102,11 @@ Safety helpers in `app/pinball-roulette.tsx`:
 - `makeObstaclesRouteSafe(...)`: prunes unsafe obstacle combinations while preserving route-safe zigzag deflector pins during narrow-path pruning.
 - `isCircleClearOfWalls(...)`: prevents pins/bumpers/exploders from being placed too close to walls.
 - `isBoosterClearOfWalls(...)`: checks rotating booster sweep clearance from walls.
+- `isProtectedBooster(...)`: preserves required boosters and finish-side boosters during route-safety pruning.
+- `addRequiredBooster(...)`: reserves an early required rotating booster before ordinary obstacle placement.
+- `ensureRequiredBoosterAfterPrune(...)`: restores a short required rotating booster after safety pruning if all boosters were removed, pruning nearby circular obstacles when necessary.
+- `addFinishSideBoosters(...)`: adds finish-side rotating bars on complexity 4-5 maps.
+- `ensureFinishSideBoostersAfterPrune(...)`: restores missing finish-side bars after safety pruning, using shorter fallback bars when side lanes are tight.
 - `pickDistributedPathPoint(...)`: spreads obstacle candidates through the full vertical route so higher obstacle counts do not cluster into traps.
 - `hasBumperLaneSpace(...)`: prevents bumper chains in the same lane.
 - `addZigzagDeflectorPins(...)`: adds one or two centerline pins to zigzag maps before other obstacles so direct vertical drops must deflect at least once. If the coarse route checker cannot prove the base zigzag route is open, placement falls back to path/wall clearance checks to avoid skipping the deflector on validator false negatives.
@@ -108,14 +117,22 @@ Safety helpers in `app/pinball-roulette.tsx`:
   It also removes legacy outside finish side walls (`finish-left`, `finish-right`).
 - `app/static-spa.ts`: exposes static SPA detection and hash-link conversion.
 - `app/app-link.tsx`: shared anchor wrapper used instead of `next/link` so both Vinext and Vite SPA builds work.
+- Feedback records are stored in browser `localStorage` under `pinball-roulette-feedback-v1` and capped at 12 recent items.
 - `spa/main.tsx`: static-only React entry that switches between game and custom builder by URL hash.
 - `vite.github-pages.config.ts`: builds `dist/github-pages`, copies `index.html` to `404.html`, and writes `.nojekyll`.
+
+Custom map helpers in `app/custom-map-builder.tsx`:
+
+- `buildCustomPathFromWalls(...)`: samples drawn boundary walls from top to bottom and derives playable `path` metadata from the outer left/right wall intersections.
+- `validateCustomMapForSave(...)`: blocks saving if the custom path is incomplete, too narrow, too sharply bent, has unsafe obstacles, closes the finish drop lane, or lacks an open route.
+- The custom builder's `경계벽` tool is for route boundaries. Extra interior wall segments may be drawn, but saving fails if they block the route or finish lane.
 
 Physics notes:
 
 - Bumper collision tracks `bumperCooldown` and `bumperChain`.
 - Bumper contacts always add downward progress velocity and use reduced side kick to avoid wall-bumper loops.
 - Pin collisions deflect balls but always restore mild downward progress so dense pin areas cannot create long upward loops.
+- Wall collisions cap upward rebounds at neutral vertical speed so slower fall tuning does not create long wall-bounce loops.
 - There must be no `releaseStuckBall`, `findReleasePoint`, `isReleasePointOpen`, `bestY`, or `stuckTime` anti-stuck relocation logic in the code.
 
 ## Recent Updates
@@ -124,6 +141,12 @@ Physics notes:
 - 2026-06-10: Increased generated path curvature by complexity with more path control points, stronger high-level bend strength, wider high-complexity lanes, and capped larger side-to-side steps.
 - 2026-06-10: Increased obstacle counts by complexity: more pin clusters, distributed single pins, bumpers, exploders, and boosters are attempted at higher levels, using distributed route positions, complexity-scaled spacing, and existing route-safety checks.
 - 2026-06-10: Added centerline deflector pins to zigzag maps, preserved them during obstacle safety pruning, allowed them on route-checker false negatives when path/wall clearance passes, and changed `랜덤 생성` to preserve the selected complexity instead of choosing a new one.
+- 2026-06-10: Slowed ball fall speed by reducing gravity to `0.18`, max fall speed to `5.7`, and downward impulse floors from pins, bumpers, boosters, and exploders while keeping downward progress behavior. Wall collisions now cap upward rebound at neutral vertical speed to avoid slow-fall wall loops.
+- 2026-06-10: Adjusted run-time board auto-scroll to follow the leading falling balls with an earlier viewport offset and faster interpolation.
+- 2026-06-10: Added required rotating-booster reservation and post-prune restoration so generated/random maps always keep at least one `boost-required-*` or regular `boost-*` rotating booster.
+- 2026-06-10: Added a right-panel feedback area that stores recent feature/map ideas locally for future implementation planning.
+- 2026-06-10: Added protected finish-side rotating bars for complexity 4-5 maps so the final approach can include left/right lane hazards before the finish line without blocking the central drop lane. Finish-side bars now require extra wall clearance (`BALL_RADIUS + 20`) so the rotating sweep does not create wall pockets.
+- 2026-06-10: Reworked the custom map builder so users create the guide route by drawing editable boundary walls. The builder now derives the saved path from those walls, previews the derived lane, validates route width/continuity/finish clearance/open route on save, and treats the old guide button as an editable sample boundary generator.
 - 2026-06-09: Optimized `npm run simulate` by compiling the game module directly instead of using a VM context, and added `--target-balls` for million-scale ball simulation runs.
 - 2026-06-09: Changed rotating booster collision from forced upward kicks to downward progress assists so booster loops do not keep balls cycling in the same section.
 - 2026-06-09: Added wall-contact damping that limits excessive upward rebounds from path and internal walls without relocating balls.
@@ -199,10 +222,27 @@ The in-app browser tool has repeatedly failed in this Windows environment with:
 
 `windows sandbox failed: spawn setup refresh`
 
-When that happens, continue validation with headless Chrome screenshots, for example:
+On 2026-06-10, the Browser plugin skill also could not load because
+`scripts/browser-client.mjs` was missing from the enabled Browser plugin folder.
+When the in-app browser is unavailable, continue validation with headless Chrome
+screenshots, for example:
 
 ```powershell
 & 'C:\Program Files\Google\Chrome\Application\chrome.exe' --headless=new --disable-gpu --no-sandbox --disable-application-cache --run-all-compositor-stages-before-draw --virtual-time-budget=5000 --window-size=1440,1800 --screenshot='C:\tmp\pinball-check.png' 'http://localhost:3000/?v=check'
 ```
 
 Then inspect the generated screenshot and refresh `public/screenshot.jpeg` if the visual state changed.
+
+## Last Validation
+
+- 2026-06-10: `npm run lint`, `npm run build`, and `npm run build:gh-pages` passed.
+- 2026-06-10: Verified 10,000 explicit zigzag maps across complexities 1-5; every map kept at least one `pin-zigzag-deflector-*` pin.
+- 2026-06-10: Ran `npm run simulate -- --target-balls=1000000 --players=1,2,3,5,8,12,20,30,30,30,30,30 --progress-every=20000 --fail-fast`; passed with `totalBalls=1000007`, `failureCount=0`, and max finish times by complexity: c1 5.20s, c2 7.90s, c3 12.12s, c4 15.13s, c5 18.97s.
+- 2026-06-10: Rendered `http://localhost:3000/` through headless Chrome with a 5s virtual-time budget and confirmed the board, balls, path walls, and obstacles draw correctly.
+- 2026-06-10: After slowing fall tuning, `npm run lint`, `npm run build`, and `npm run build:gh-pages` passed. A 100,000-ball smoke run passed with `failureCount=0`.
+- 2026-06-10: After slowing fall tuning, ran `npm run simulate -- --target-balls=1000000 --players=1,2,3,5,8,12,20,30,30,30,30,30 --progress-every=20000 --fail-fast`; passed with `totalBalls=1000007`, `failureCount=0`, and max finish times by complexity: c1 5.27s, c2 8.47s, c3 10.98s, c4 13.12s, c5 15.85s.
+- 2026-06-10: After auto-scroll tuning, `npm run lint`, `npm run build`, and `npm run build:gh-pages` passed. Chrome CDP verified that pressing `시작` moved `.stage-wrap.scrollTop` from `0` to `630` after 7 seconds.
+- 2026-06-10: After required-booster tuning, verified 10,000 random maps across complexities 1-5; every map had at least one rotating booster. `npm run lint`, `npm run build`, `npm run build:gh-pages`, and a 100,000-ball simulation passed with `failureCount=0`.
+- 2026-06-10: After adding the feedback area, `npm run lint`, `npm run build`, and `npm run build:gh-pages` passed. Chrome CDP verified typing a feedback message, pressing `의견 저장`, rendering the saved card, and writing one record to `pinball-roulette-feedback-v1`.
+- 2026-06-10: After adding finish-side rotating bars, verified 2,000 random complexity 4-5 maps; every map had two `boost-finish-side-*` boosters and none blocked the central finish drop lane. `npm run simulate -- --target-balls=100000 --players=1,2,3,5,8,12,20,30,30,30,30,30 --progress-every=5000 --fail-fast` passed with `totalBalls=100015`, `failureCount=0`, and max finish times by complexity: c1 5.12s, c2 7.27s, c3 9.55s, c4 13.53s, c5 14.83s. `npm run lint`, `npm run build`, and `npm run build:gh-pages` passed, and a headless Chrome screenshot confirmed the page/canvas renders.
+- 2026-06-10: After the custom boundary-wall builder rework, `npm run lint`, `npm run build`, and `npm run build:gh-pages` passed. A direct custom-builder validation confirmed sample boundary walls derive a ready path with `minWidth=130` and pass `validateCustomMapForSave`; a sample custom map simulation finished 8/8 balls. Headless Chrome rendered `/custom` with the new `경계벽` tool and route status panel.
