@@ -943,6 +943,46 @@ input[type="range"]::-moz-range-thumb {
   padding: 9px 10px;
 }
 
+.builder-criteria {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(255, 216, 77, 0.16);
+  border-radius: var(--radius-sm);
+  background: rgba(16, 13, 5, 0.36);
+  padding: 10px;
+}
+
+.builder-criteria strong {
+  color: var(--yellow);
+  font-size: 12px;
+}
+
+.builder-criteria dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.builder-criteria div {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.builder-criteria dt {
+  color: rgba(255, 216, 77, 0.72);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.builder-criteria dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .builder-game-link {
   display: block;
   margin-top: auto;

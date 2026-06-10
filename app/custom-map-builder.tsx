@@ -24,6 +24,8 @@ const MAX_CUSTOM_PATH_STEP = 96;
 const CUSTOM_PATH_TOP_Y = 88;
 const CUSTOM_PATH_BOTTOM_Y = BOARD_HEIGHT - 132;
 const CUSTOM_PATH_SAMPLE_STEP = 44;
+const CUSTOM_WALL_SAMPLE_TOLERANCE = 18;
+const MAX_CUSTOM_MISSING_SAMPLES = 1;
 
 type Point = {
   x: number;
@@ -107,6 +109,9 @@ type PathBuildResult = {
   ready: boolean;
   message: string;
   minWidth: number;
+  missingSamples: number;
+  narrowSamples: number;
+  steepSamples: number;
 };
 
 const DEFAULT_GUIDE_PATH: PathNode[] = [
@@ -199,18 +204,26 @@ function distanceToSegment(point: Point, segment: Pick<Segment, "x1" | "y1" | "x
   return Math.hypot(point.x - px, point.y - py);
 }
 
-function getWallIntersectionsAtY(walls: Segment[], y: number) {
+function getWallIntersectionsAtY(
+  walls: Segment[],
+  y: number,
+  tolerance = 0
+) {
   const intersections = walls
     .flatMap((wall) => {
       const minY = Math.min(wall.y1, wall.y2);
       const maxY = Math.max(wall.y1, wall.y2);
       const spanY = wall.y2 - wall.y1;
 
-      if (Math.abs(spanY) < 0.001 || y < minY || y > maxY) {
+      if (
+        Math.abs(spanY) < 0.001 ||
+        y < minY - tolerance ||
+        y > maxY + tolerance
+      ) {
         return [];
       }
 
-      const t = (y - wall.y1) / spanY;
+      const t = clamp((y - wall.y1) / spanY, 0, 1);
       return [wall.x1 + (wall.x2 - wall.x1) * t];
     })
     .sort((a, b) => a - b);
@@ -218,6 +231,16 @@ function getWallIntersectionsAtY(walls: Segment[], y: number) {
   return intersections.filter(
     (x, index) => index === 0 || Math.abs(x - intersections[index - 1]) > 2
   );
+}
+
+function getWallIntersectionsNearY(walls: Segment[], y: number) {
+  const direct = getWallIntersectionsAtY(walls, y);
+
+  if (direct.length >= 2) {
+    return direct;
+  }
+
+  return getWallIntersectionsAtY(walls, y, CUSTOM_WALL_SAMPLE_TOLERANCE);
 }
 
 function getFinishLineY() {
@@ -260,6 +283,9 @@ function buildCustomPathFromWalls(walls: Segment[]): PathBuildResult {
       ready: false,
       message: "경계벽 2개 이상 필요",
       minWidth: 0,
+      missingSamples: 0,
+      narrowSamples: 0,
+      steepSamples: 0,
     };
   }
 
@@ -268,6 +294,8 @@ function buildCustomPathFromWalls(walls: Segment[]): PathBuildResult {
   let missingSamples = 0;
   let narrowSamples = 0;
   let steepSamples = 0;
+  let consecutiveMissingSamples = 0;
+  let maxConsecutiveMissingSamples = 0;
   let previous: PathNode | null = null;
 
   for (
@@ -275,12 +303,19 @@ function buildCustomPathFromWalls(walls: Segment[]): PathBuildResult {
     y <= CUSTOM_PATH_BOTTOM_Y;
     y += CUSTOM_PATH_SAMPLE_STEP
   ) {
-    const intersections = getWallIntersectionsAtY(walls, y);
+    const intersections = getWallIntersectionsNearY(walls, y);
 
     if (intersections.length < 2) {
       missingSamples += 1;
+      consecutiveMissingSamples += 1;
+      maxConsecutiveMissingSamples = Math.max(
+        maxConsecutiveMissingSamples,
+        consecutiveMissingSamples
+      );
       continue;
     }
+
+    consecutiveMissingSamples = 0;
 
     const left = intersections[0];
     const right = intersections[intersections.length - 1];
@@ -306,7 +341,7 @@ function buildCustomPathFromWalls(walls: Segment[]): PathBuildResult {
   }
 
   if (path[path.length - 1]?.y !== CUSTOM_PATH_BOTTOM_Y) {
-    const intersections = getWallIntersectionsAtY(walls, CUSTOM_PATH_BOTTOM_Y);
+    const intersections = getWallIntersectionsNearY(walls, CUSTOM_PATH_BOTTOM_Y);
 
     if (intersections.length >= 2) {
       const left = intersections[0];
@@ -320,12 +355,19 @@ function buildCustomPathFromWalls(walls: Segment[]): PathBuildResult {
     }
   }
 
-  if (path.length < 6 || missingSamples > 0) {
+  if (
+    path.length < 6 ||
+    missingSamples > MAX_CUSTOM_MISSING_SAMPLES ||
+    maxConsecutiveMissingSamples > MAX_CUSTOM_MISSING_SAMPLES
+  ) {
     return {
       path,
       ready: false,
       message: "경계벽이 위부터 아래까지 이어져야 함",
       minWidth: Number.isFinite(minWidth) ? minWidth : 0,
+      missingSamples,
+      narrowSamples,
+      steepSamples,
     };
   }
 
@@ -335,6 +377,9 @@ function buildCustomPathFromWalls(walls: Segment[]): PathBuildResult {
       ready: false,
       message: "길 폭이 너무 좁음",
       minWidth,
+      missingSamples,
+      narrowSamples,
+      steepSamples,
     };
   }
 
@@ -344,6 +389,9 @@ function buildCustomPathFromWalls(walls: Segment[]): PathBuildResult {
       ready: false,
       message: "가로 꺾임이 너무 큼",
       minWidth,
+      missingSamples,
+      narrowSamples,
+      steepSamples,
     };
   }
 
@@ -352,6 +400,9 @@ function buildCustomPathFromWalls(walls: Segment[]): PathBuildResult {
     ready: true,
     message: "경로 준비됨",
     minWidth,
+    missingSamples,
+    narrowSamples,
+    steepSamples,
   };
 }
 
@@ -374,6 +425,53 @@ function isCircleClearOfWalls(
   return walls.every(
     (wall) => distanceToSegment(circle, wall) > circle.radius + padding
   );
+}
+
+function findCirclePlacementPoint(
+  path: PathNode[],
+  walls: Segment[],
+  point: Point,
+  radius: number,
+  pathMargin: number,
+  wallPadding: number
+) {
+  const band = getPathBandAtY(path, point.y);
+  const halfWidth = Math.max(0, band.width / 2 - pathMargin);
+
+  if (halfWidth <= 0) {
+    return null;
+  }
+
+  const baseX = clamp(point.x, band.x - halfWidth, band.x + halfWidth);
+  const offsets = [0];
+
+  for (let offset = 4; offset <= Math.min(halfWidth * 2, 96); offset += 4) {
+    offsets.push(-offset, offset);
+  }
+
+  for (const offset of offsets) {
+    const candidate = {
+      x: clamp(baseX + offset, band.x - halfWidth, band.x + halfWidth),
+      y: point.y,
+    };
+    const circle = { ...candidate, radius };
+
+    if (!isPointInsidePath(path, candidate, pathMargin)) {
+      continue;
+    }
+
+    if (blocksFinishDropLane(path, candidate, radius)) {
+      continue;
+    }
+
+    if (!isCircleClearOfWalls(walls, circle, wallPadding)) {
+      continue;
+    }
+
+    return candidate;
+  }
+
+  return null;
 }
 
 function isBoosterClearOfWalls(
@@ -1023,25 +1121,31 @@ export default function CustomMapBuilder() {
           return;
         }
 
-        const margin = tool === "pin" ? 12 : tool === "bumper" ? 34 : 32;
         const radius = tool === "pin" ? 3.8 : tool === "bumper" ? 20 : 18;
+        const margin =
+          radius + BALL_RADIUS + (tool === "pin" ? 8 : 10);
         const wallPadding =
           tool === "bumper" ? BUMPER_WALL_CLEARANCE : WALL_TRAP_CLEARANCE;
+        const placementPoint = findCirclePlacementPoint(
+          pathBuild.path,
+          map.walls,
+          point,
+          radius,
+          margin,
+          wallPadding
+        );
 
-        if (!isPointInsidePath(pathBuild.path, point, margin)) {
-          setSaveStatus("장애물은 길 안쪽에 배치");
+        if (!placementPoint) {
+          setSaveStatus("장애물 여유 공간 부족");
           return;
         }
 
-        if (
-          blocksFinishDropLane(pathBuild.path, point, radius) ||
-          !isCircleClearOfWalls(map.walls, { ...point, radius }, wallPadding)
-        ) {
-          setSaveStatus("장애물이 벽/피니시에 너무 가까움");
-          return;
-        }
-
-        addCircleObstacle(point);
+        addCircleObstacle(placementPoint);
+        setSaveStatus(
+          Math.abs(placementPoint.x - point.x) < 0.5
+            ? `${TOOL_LABELS[tool]} 추가됨`
+            : `${TOOL_LABELS[tool]} 안전 위치로 이동`
+        );
         return;
       }
 
@@ -1247,6 +1351,41 @@ export default function CustomMapBuilder() {
             </div>
           </dl>
           <div className="builder-status-line">{pathBuild.message}</div>
+          <div className="builder-criteria" aria-label="커스텀 맵 최소 조건">
+            <strong>최소 조건</strong>
+            <dl>
+              <div>
+                <dt>경계</dt>
+                <dd>좌/우 벽 2개가 y {CUSTOM_PATH_TOP_Y}-{CUSTOM_PATH_BOTTOM_Y} 연결</dd>
+              </div>
+              <div>
+                <dt>폭</dt>
+                <dd>
+                  {MIN_CUSTOM_PATH_WIDTH}px 이상
+                  {pathBuild.minWidth > 0
+                    ? ` · 현재 ${Math.round(pathBuild.minWidth)}px`
+                    : ""}
+                </dd>
+              </div>
+              <div>
+                <dt>꺾임</dt>
+                <dd>샘플 사이 중심 이동 {MAX_CUSTOM_PATH_STEP}px 이하</dd>
+              </div>
+              <div>
+                <dt>샘플</dt>
+                <dd>
+                  누락 {MAX_CUSTOM_MISSING_SAMPLES}개 이하
+                  {pathBuild.path.length > 0
+                    ? ` · 현재 ${pathBuild.missingSamples}개`
+                    : ""}
+                </dd>
+              </div>
+              <div>
+                <dt>장애물</dt>
+                <dd>벽 여유와 피니시 중앙 차선 확보</dd>
+              </div>
+            </dl>
+          </div>
 
           <div className="panel-title">
             <h2>구성</h2>

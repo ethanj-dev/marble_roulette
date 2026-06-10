@@ -58,6 +58,7 @@ Players are counted by comma-separated non-empty names only. Example: `나, 하�
 - The right side panel has a local feedback area for future feature/map ideas.
 - Custom map page exists at `/custom`.
 - Custom map builder treats drawn walls as editable route boundary walls and derives saved `path` metadata from left/right wall intersections.
+- Custom map builder tolerates small boundary-wall endpoint/sample gaps, snaps circular obstacles to the nearest safe same-height in-path position, and shows minimum save conditions in the right status panel.
 - GitHub Pages static SPA build exists and outputs to `dist/github-pages`.
 - The static SPA uses hash routing (`#/custom`) and localStorage-only map saves.
 - Local `GET /api/maps` returns `{ maps: [] }` with HTTP 200 when the local D1 binding/table is unavailable, avoiding console noise while preserving the API path.
@@ -132,6 +133,8 @@ Safety helpers in `app/pinball-roulette.tsx`:
 Custom map helpers in `app/custom-map-builder.tsx`:
 
 - `buildCustomPathFromWalls(...)`: samples drawn boundary walls from top to bottom and derives playable `path` metadata from the outer left/right wall intersections.
+  It tolerates small y-sample/endpoint gaps and reports missing/narrow/steep sample counts for the status panel.
+- `findCirclePlacementPoint(...)`: snaps pins, bumpers, and exploders to the nearest same-height safe in-path x-position when the click is slightly outside the required wall/path clearance.
 - `validateCustomMapForSave(...)`: blocks saving if the custom path is incomplete, too narrow, too sharply bent, has unsafe obstacles, closes the finish drop lane, or lacks an open route.
 - The custom builder's `경계벽` tool is for route boundaries. Extra interior wall segments may be drawn, but saving fails if they block the route or finish lane.
 
@@ -160,6 +163,7 @@ Physics notes:
 - 2026-06-10: Reworked the custom map builder so users create the guide route by drawing editable boundary walls. The builder now derives the saved path from those walls, previews the derived lane, validates route width/continuity/finish clearance/open route on save, and treats the old guide button as an editable sample boundary generator.
 - 2026-06-10: Added strict simulator gates for minimum lateral travel and rank reversals, added route-flow velocity, multiplayer race pressure/drafting/breakaway controls, generic route deflectors for non-zigzag maps, and board-center targeting for first zigzag deflectors so generated maps avoid straight drops and produce repeated overtakes without ball relocation.
 - 2026-06-10: Changed local `GET /api/maps` to return an empty map list with HTTP 200 when D1 is unavailable, keeping local rendering console-clean while retaining D1 save behavior for configured deployments.
+- 2026-06-10: Improved the custom map builder by tolerating small boundary-wall sampling gaps, snapping circular obstacles to nearby safe in-path positions, and showing minimum path/obstacle conditions beside the route status so users can see why a custom map is not ready.
 - 2026-06-09: Optimized `npm run simulate` by compiling the game module directly instead of using a VM context, and added `--target-balls` for million-scale ball simulation runs.
 - 2026-06-09: Changed rotating booster collision from forced upward kicks to downward progress assists so booster loops do not keep balls cycling in the same section.
 - 2026-06-09: Added wall-contact damping that limits excessive upward rebounds from path and internal walls without relocating balls.
