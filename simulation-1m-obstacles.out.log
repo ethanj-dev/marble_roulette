@@ -1,0 +1,90 @@
+
+> pinball-roulette-map-maker@0.1.0 simulate
+> node scripts/simulate-pinball.cjs --target-balls=1000000 --players=1,2,3,5,8,12,20,30,30,30,30,30 --progress-every=20000 --fail-fast
+
+progress trials=20000/1000 targetBalls=332880/1000000 failures=0 elapsed=413.0s
+progress trials=40000/1000 targetBalls=668520/1000000 failures=0 elapsed=824.4s
+{
+  "aggregates": {
+    "byComplexity": {
+      "1": {
+        "completed": 11970,
+        "failed": 0,
+        "maxSeconds": 5.35,
+        "totalSeconds": 41873.98333333336
+      },
+      "2": {
+        "completed": 11969,
+        "failed": 0,
+        "maxSeconds": 7.7,
+        "totalSeconds": 53949.91666666661
+      },
+      "3": {
+        "completed": 11969,
+        "failed": 0,
+        "maxSeconds": 11.35,
+        "totalSeconds": 70812.11666666699
+      },
+      "4": {
+        "completed": 11969,
+        "failed": 0,
+        "maxSeconds": 15.116666666666667,
+        "totalSeconds": 92784.08333333372
+      },
+      "5": {
+        "completed": 11969,
+        "failed": 0,
+        "maxSeconds": 18.966666666666665,
+        "totalSeconds": 116738.64999999994
+      }
+    },
+    "totalBalls": 1000007,
+    "totalFrames": 391342084
+  },
+  "elapsedSeconds": 1230.47,
+  "failureCount": 0,
+  "firstFailures": [],
+  "options": {
+    "trials": 1000,
+    "players": [
+      1,
+      2,
+      3,
+      5,
+      8,
+      12,
+      20,
+      30,
+      30,
+      30,
+      30,
+      30
+    ],
+    "complexities": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "structures": [
+      "random",
+      "zigzag",
+      "funnel",
+      "chambers",
+      "split",
+      "cascade",
+      "chaos"
+    ],
+    "seed": 1,
+    "lowMaxSeconds": 40,
+    "maxSeconds": 60,
+    "progressEvery": 20000,
+    "failFast": true,
+    "startIndex": 0,
+    "targetBalls": 1000000,
+    "trace": false
+  },
+  "passed": true,
+  "trialsCompleted": 59846
+}

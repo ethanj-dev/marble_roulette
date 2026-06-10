@@ -1,0 +1,208 @@
+# Pinball Roulette Agent Handoff
+
+Last updated: 2026-06-10
+
+This file is the required handoff source for Codex, Claude, and any other agent or PC continuing this project. Read this before changing code.
+
+## Update Rule
+
+- Every meaningful code or behavior change must update this `agents.md` file in the same turn.
+- Add the new change to `Recent Updates`, adjust `Current State`, and update `Open Tasks` if the task list changes.
+- Never leave this file stale after changing generation logic, physics, UI, map saving/loading, or validation rules.
+
+## Project
+
+- Local app URL: `http://localhost:3000/`
+- Stack: Vinext/Next-style React app, TypeScript, canvas rendering.
+- Main game file: `app/pinball-roulette.tsx`
+- Custom map editor: `app/custom-map-builder.tsx`
+- Styles: `app/globals.css`
+- GitHub Pages SPA entry: `spa/main.tsx` and `spa/index.html`
+- GitHub Pages Vite config: `vite.github-pages.config.ts`
+- Sites preview image: `public/screenshot.jpeg`
+- Package scripts:
+  - `npm run lint`
+  - `npm run build`
+  - `npm run build:gh-pages`
+  - `npm run preview:gh-pages`
+  - `npm run dev`
+
+## User Goal
+
+Build a vertical pinball roulette game similar to `https://lazygyu.github.io/roulette/`, but with random/saveable maps, custom maps, player-name balls, ranking, recording, shuffled starts, and safer obstacle/path generation.
+
+Players are counted by comma-separated non-empty names only. Example: `나, 하나, 둘` means 3 players. Empty comma slots must not create players.
+
+## Current State
+
+- Board is tall and vertical: `BOARD_WIDTH = 430`; generated map height is dynamic by complexity.
+- Balls start at the same height and are shuffled horizontally.
+- Generated maps store `path?: PathNode[]` and balls are constrained inside the path.
+- Random maps include zigzag/funnel/chambers/split/cascade/chaos structures.
+- Generated paths become more curved as complexity increases; complexity 4-5 use more control points, stronger bends, and wider lanes.
+- Zigzag maps add route-safe centerline deflector pins so balls cannot take a pure straight drop through the route.
+- Generated obstacle counts increase by complexity, while each candidate is distributed along the route and must pass route-clearance checks before it is kept.
+- The `랜덤 생성` button keeps the currently selected complexity and only randomizes the generated structure/seed.
+- Split islands may create branches, but must keep both lanes wider than the ball.
+- Ranking is shown in the right side panel, not the top-right area.
+- Winner condition supports `First`, `Last`, and winner count.
+- Recording support exists through `canvas.captureStream` and `MediaRecorder`.
+- Start order can be shuffled.
+- Finish line is drawn at the bottom with `getFinishLineY(boardHeight)`.
+- Custom map page exists at `/custom`.
+- Custom guide maps save path metadata when guide walls are added.
+- GitHub Pages static SPA build exists and outputs to `dist/github-pages`.
+- The static SPA uses hash routing (`#/custom`) and localStorage-only map saves.
+
+## Mandatory Rules
+
+- Do not randomly relocate balls as a stuck fix. The user explicitly forbids arbitrary ball repositioning.
+- Prevent stuck states by map generation, obstacle spacing, route clearance, and physics behavior only.
+- Balls must not leave the path on generated maps.
+- Start height must be identical for all balls.
+- The map must remain vertical and progress downward.
+- A generated path must not be blocked by internal single bars. Internal walls must form meaningful branch/new-path structures, not dead blockers.
+- Do not create decorative/outside wall bars outside the playable route. Walls should be path boundaries, valid internal branch geometry, or in-path finish funnel geometry only.
+- Obstacles must be inside the path, but not so close to walls that a ball can be trapped.
+- If a branch/split island is generated, the gap between the branch geometry and outer path walls must be larger than the ball.
+- The finish zone must always have an open central drop lane to the finish line.
+- Obstacle components must not be too close together.
+- Bumpers must not create long bounce loops. Consecutive bumper hits should help the ball continue downward.
+- Any saved old map loaded into the game should be sanitized by current safety rules.
+- Use `apply_patch` for manual file edits.
+- Do not use destructive git commands.
+- Keep the GitHub Pages target separate from the Vinext/Cloudflare build; do not remove `/api/maps` unless the user explicitly changes deployment strategy.
+
+## Important Implementation Notes
+
+- `BALL_RADIUS = 10`
+- `ROUTE_CLEARANCE = BALL_RADIUS + 10`
+- `WALL_TRAP_CLEARANCE = BALL_RADIUS * 2 + 18`
+- `BUMPER_WALL_CLEARANCE = BALL_RADIUS * 2 + 20`
+- `MIN_OBSTACLE_GAP = 64`
+- `getObstacleGap(complexity)` relaxes obstacle spacing gradually at higher complexity while preserving route checks.
+- `MIN_BRANCH_LANE_WIDTH = BALL_RADIUS * 2 + 44`
+- `DEFAULT_BOARD_HEIGHT = 1420`
+- `MAX_PATH_HORIZONTAL_STEP = 76` limits random path point side-to-side movement so generated walls do not create bounce-back pockets.
+- `MAX_HIGH_COMPLEXITY_PATH_STEP = 88` lets higher-complexity paths use stronger side-to-side curves while keeping per-segment movement capped.
+- Generated board height currently uses `getGeneratedBoardHeight(complexity) = 1180 + level * 150`.
+- `MapLayout.height` stores the generated board height.
+- Finish positions are dynamic through `getFinishLineY(boardHeight)` and `getFinishClearStartY(boardHeight)`.
+- `FINISH_DROP_CLEARANCE = BALL_RADIUS + 8`
+- Current fall tuning: `gravity = 0.22`, `maxFallSpeed = 7`, `maxRiseSpeed = -11.1`.
+
+Safety helpers in `app/pinball-roulette.tsx`:
+
+- `hasOpenRoute(...)`: checks whether a ball-sized route exists through walls and obstacles.
+- `routeIsOpen(...)`
+- `makeObstaclesRouteSafe(...)`: prunes unsafe obstacle combinations while preserving route-safe zigzag deflector pins during narrow-path pruning.
+- `isCircleClearOfWalls(...)`: prevents pins/bumpers/exploders from being placed too close to walls.
+- `isBoosterClearOfWalls(...)`: checks rotating booster sweep clearance from walls.
+- `pickDistributedPathPoint(...)`: spreads obstacle candidates through the full vertical route so higher obstacle counts do not cluster into traps.
+- `hasBumperLaneSpace(...)`: prevents bumper chains in the same lane.
+- `addZigzagDeflectorPins(...)`: adds one or two centerline pins to zigzag maps before other obstacles so direct vertical drops must deflect at least once. If the coarse route checker cannot prove the base zigzag route is open, placement falls back to path/wall clearance checks to avoid skipping the deflector on validator false negatives.
+- `hasBranchLaneClearance(...)`: prevents split geometry from creating unpassable lanes.
+- `blocksFinishDropLane(...)`
+- `segmentBlocksFinishDropLane(...)`
+- `sanitizeMapLayout(...)`: cleans older saved maps on load.
+  It also removes legacy outside finish side walls (`finish-left`, `finish-right`).
+- `app/static-spa.ts`: exposes static SPA detection and hash-link conversion.
+- `app/app-link.tsx`: shared anchor wrapper used instead of `next/link` so both Vinext and Vite SPA builds work.
+- `spa/main.tsx`: static-only React entry that switches between game and custom builder by URL hash.
+- `vite.github-pages.config.ts`: builds `dist/github-pages`, copies `index.html` to `404.html`, and writes `.nojekyll`.
+
+Physics notes:
+
+- Bumper collision tracks `bumperCooldown` and `bumperChain`.
+- Bumper contacts always add downward progress velocity and use reduced side kick to avoid wall-bumper loops.
+- Pin collisions deflect balls but always restore mild downward progress so dense pin areas cannot create long upward loops.
+- There must be no `releaseStuckBall`, `findReleasePoint`, `isReleasePointOpen`, `bestY`, or `stuckTime` anti-stuck relocation logic in the code.
+
+## Recent Updates
+
+- 2026-06-09: Added `npm run simulate` (`scripts/simulate-pinball.cjs`) to run deterministic bulk simulations against the actual map generation and physics functions with 40s limits for complexity 1-2 and 60s limits for complexity 3-5.
+- 2026-06-10: Increased generated path curvature by complexity with more path control points, stronger high-level bend strength, wider high-complexity lanes, and capped larger side-to-side steps.
+- 2026-06-10: Increased obstacle counts by complexity: more pin clusters, distributed single pins, bumpers, exploders, and boosters are attempted at higher levels, using distributed route positions, complexity-scaled spacing, and existing route-safety checks.
+- 2026-06-10: Added centerline deflector pins to zigzag maps, preserved them during obstacle safety pruning, allowed them on route-checker false negatives when path/wall clearance passes, and changed `랜덤 생성` to preserve the selected complexity instead of choosing a new one.
+- 2026-06-09: Optimized `npm run simulate` by compiling the game module directly instead of using a VM context, and added `--target-balls` for million-scale ball simulation runs.
+- 2026-06-09: Changed rotating booster collision from forced upward kicks to downward progress assists so booster loops do not keep balls cycling in the same section.
+- 2026-06-09: Added wall-contact damping that limits excessive upward rebounds from path and internal walls without relocating balls.
+- 2026-06-09: Replaced the finish gauntlet's trapping pins, kickers, and kinked funnel with low-bounce finish guide rails that preserve the central drop lane.
+- 2026-06-09: Changed exploder impulses to create lateral variation while preserving downward progress, preventing repeat blast loops.
+- 2026-06-09: Reduced split-island generation for low complexity maps; complexity 1 now generates no split islands and complexity 2 only keeps them for explicit split maps.
+- 2026-06-09: Reduced bumper upward kicks and extended bumper-chain memory so bumper contacts turn into downward progress sooner.
+- 2026-06-09: Increased wall clearance for circular obstacles and saved-map sanitization to prevent balls wedging between pins/bumpers/exploders and path walls.
+- 2026-06-09: Changed bumper contacts to always add downward progress and reduced side kicks to prevent wall-bumper loops in high-player split maps.
+- 2026-06-09: Added rotating-booster wall clearance checks using the full sweep radius so boosters cannot trap balls against path walls.
+- 2026-06-09: Tightened split-island lane width checks, increased branch sampling density, and removed optional split islands from non-split/non-chaos/non-chambers structures.
+- 2026-06-09: Added a larger bumper-specific wall clearance so bumpers cannot form repeat traps against path walls.
+- 2026-06-09: Removed the old below-board reset fallback so simulation code contains no arbitrary ball relocation branch.
+- 2026-06-09: Added right side ranking panel and removed ranking from top-right.
+- 2026-06-09: Made all balls start at the same height.
+- 2026-06-09: Added path metadata to generated maps and path confinement for balls.
+- 2026-06-09: Added custom map builder page and guide path saving.
+- 2026-06-09: Removed internal single-wall blockers from random maps.
+- 2026-06-09: Added branch clearance checks so split lanes are passable.
+- 2026-06-09: Added bottom `FINISH` line.
+- 2026-06-09: Added finish-zone central drop-lane safety.
+- 2026-06-09: Increased obstacle spacing and route validation.
+- 2026-06-09: Removed arbitrary anti-stuck ball relocation after user explicitly forbade it.
+- 2026-06-09: Strengthened pin/bumper/exploder wall-clearance checks and route checks before obstacle placement.
+- 2026-06-09: Added bumper-chain physics so repeated bumper hits do not trap balls for a long time.
+- 2026-06-09: Created this `agents.md` handoff file and made it mandatory to update on every future behavior/code change.
+- 2026-06-09: Added deployment notes for GitHub Pages vs Cloudflare operation.
+- 2026-06-09: Made generated map height increase by complexity and wired canvas, finish line, route checks, scrolling, saving, and custom map metadata to dynamic height.
+- 2026-06-09: Slowed ball fall speed slightly and removed outside finish side wall bars from new and loaded saved maps.
+- 2026-06-09: Increased split branch lane clearance so branch geometry cannot create narrow side pockets that trap balls.
+- 2026-06-09: Limited random path point horizontal movement to reduce mid-path bounce-back pockets while keeping the route varied.
+- 2026-06-09: Capped upward velocity after pin collisions so dense pin areas deflect balls without trapping them in long loops.
+- 2026-06-09: Fixed simulation script lint compatibility without changing simulation behavior.
+- 2026-06-09: Added a separate GitHub Pages static SPA build target with hash routing, localStorage-only map saving, `404.html`, and `.nojekyll` output.
+
+## Open Tasks
+
+- Decide whether to add a GitHub Actions workflow that runs `npm run build:gh-pages` and publishes `dist/github-pages` to Pages.
+- Test more random seeds visually, especially complexity 4-5, to ensure maps still have enough fun obstacles after safety pruning.
+- Consider adding deterministic generation tests for route safety if the project gets a test framework.
+- Consider adding a visible "map safety" debug overlay only for development, not in the user-facing UI.
+- Improve custom map validation so manually drawn custom walls can define multi-branch paths more deliberately.
+- If deploying with Sites, refresh `public/screenshot.jpeg` after significant visual changes.
+
+## Deployment Notes
+
+- Current Vinext build creates `dist/client` assets and server/RSC output, but `dist/client` does not currently contain a standalone `index.html` suitable for GitHub Pages.
+- GitHub Pages can host this game through `npm run build:gh-pages`.
+- GitHub Pages output is `dist/github-pages`.
+- GitHub Pages static routing uses URL hashes, so custom map builder is `#/custom`.
+- For GitHub Pages, `/api/maps` will not exist. Static mode skips API calls and uses localStorage map saves only; shared server map storage still requires Cloudflare Workers/Pages or a separate API.
+- GitHub Pages needs SPA routing support for `/custom`; usually deploy `index.html` plus a copied `404.html`, or use hash routing.
+- If the requirement includes shared saved maps, prefer Cloudflare Workers/Pages or keep GitHub Pages as frontend only and call a separate Cloudflare Worker API.
+- If implementing GitHub Pages, also add a GitHub Actions workflow that builds the static target and deploys the generated static folder through `actions/upload-pages-artifact` and `actions/deploy-pages`.
+
+## Validation Checklist
+
+Run after behavior or rendering changes:
+
+1. `npm run lint`
+2. `npm run build`
+3. `npm run simulate -- --target-balls=1000000 --players=1,2,3,5,8,12,20,30,30,30,30,30 --fail-fast`
+4. Render `http://localhost:3000/` and inspect the board.
+5. Check that balls are not arbitrarily relocated.
+6. Check that the finish lane is open.
+7. Check that obstacles are not placed against walls or clustered into traps.
+8. Update `public/screenshot.jpeg` after visual changes.
+9. Update this `agents.md`.
+
+## Browser Testing Note
+
+The in-app browser tool has repeatedly failed in this Windows environment with:
+
+`windows sandbox failed: spawn setup refresh`
+
+When that happens, continue validation with headless Chrome screenshots, for example:
+
+```powershell
+& 'C:\Program Files\Google\Chrome\Application\chrome.exe' --headless=new --disable-gpu --no-sandbox --disable-application-cache --run-all-compositor-stages-before-draw --virtual-time-budget=5000 --window-size=1440,1800 --screenshot='C:\tmp\pinball-check.png' 'http://localhost:3000/?v=check'
+```
+
+Then inspect the generated screenshot and refresh `public/screenshot.jpeg` if the visual state changed.

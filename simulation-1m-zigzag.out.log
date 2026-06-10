@@ -1,0 +1,5 @@
+
+> pinball-roulette-map-maker@0.1.0 simulate
+> node scripts/simulate-pinball.cjs --target-balls=1000000 --players=1,2,3,5,8,12,20,30,30,30,30,30 --progress-every=20000 --fail-fast
+
+progress trials=20000/1000 targetBalls=332880/1000000 failures=0 elapsed=437.2s
