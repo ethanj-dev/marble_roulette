@@ -105,6 +105,8 @@ type Ball = {
   blastCooldown: number;
   bumperCooldown: number;
   bumperChain: number;
+  racePhase: number;
+  raceSpeedBonus: number;
   trail: Point[];
 };
 
@@ -190,6 +192,18 @@ const MIN_BRANCH_LANE_WIDTH = BALL_RADIUS * 2 + 44;
 const FINISH_DROP_CLEARANCE = BALL_RADIUS + 8;
 const MAX_PATH_HORIZONTAL_STEP = 76;
 const MAX_HIGH_COMPLEXITY_PATH_STEP = 88;
+const RACE_DRAFT_GAP = 120;
+const RACE_DRAFT_ACCEL = 0.2;
+const RACE_LEADER_PRESSURE_GAP = 92;
+const RACE_LEADER_DRAG = 0.18;
+const RACE_LEADER_BREAKAWAY_DRAG = 0.22;
+const RACE_SWIRL_ACCEL = 0.026;
+const RACE_PULSE_ACCEL = 0.055;
+const RACE_DRAFT_SPEED_BONUS = 4.2;
+const RACE_PULSE_SPEED_BONUS = 0.35;
+const RACE_TRAILING_PROGRESS_FLOOR = 4.3;
+const PATH_FLOW_ACCEL = 0.0032;
+const PATH_FLOW_MAX_ACCEL = 0.16;
 
 function getGeneratedBoardHeight(complexity: number) {
   const level = clamp(Math.round(complexity), 1, 5);
@@ -652,13 +666,11 @@ function makeObstaclesRouteSafe(
   }
 
   const inNarrowPath = (point: Point) => getPathBandAtY(path, point.y).width < 132;
-  const isZigzagDeflectorPin = (pin: CircleObstacle) =>
-    pin.id.startsWith("pin-zigzag-deflector-");
   const pruningSteps: Array<(current: RouteObstacles) => RouteObstacles> = [
     (current) => ({
       ...current,
       pins: current.pins.filter(
-        (pin) => isZigzagDeflectorPin(pin) || !inNarrowPath(pin)
+        (pin) => isRouteDeflectorPin(pin) || !inNarrowPath(pin)
       ),
       bumpers: current.bumpers.filter((bumper) => !inNarrowPath(bumper)),
       exploders: current.exploders.filter((exploder) => !inNarrowPath(exploder)),
@@ -705,6 +717,13 @@ function unblockMapWalls(walls: Segment[], path: PathNode[]) {
 
 function isFinishBumper(bumper: CircleObstacle) {
   return bumper.id.startsWith("finish-bumper");
+}
+
+function isRouteDeflectorPin(pin: CircleObstacle) {
+  return (
+    pin.id.startsWith("pin-zigzag-deflector-") ||
+    pin.id.startsWith("pin-route-deflector-")
+  );
 }
 
 function isRequiredBooster(booster: Booster) {
@@ -1304,7 +1323,15 @@ function addZigzagDeflectorPins(
 
     const candidate = {
       id: `pin-zigzag-deflector-${index}`,
-      x: band.x,
+      x:
+        index === 0
+          ? constrainXToPath(
+              path,
+              y,
+              BOARD_WIDTH / 2,
+              4.4 + BALL_RADIUS + 10
+            )
+          : band.x,
       y,
       radius: 4.4,
       strength: 0,
@@ -1384,6 +1411,141 @@ function addZigzagDeflectorPins(
     const fallback = path
       .slice(2, -4)
       .filter((node) => node.y > path[1].y + 70 && node.y < maxY)
+      .sort((a, b) => b.width - a.width)
+      .find((node) => tryAddDeflector(index, node.y));
+
+    if (!fallback) {
+      break;
+    }
+  }
+}
+
+function addRouteDeflectorPins(
+  path: PathNode[],
+  walls: Segment[],
+  pins: CircleObstacle[],
+  bumpers: CircleObstacle[],
+  exploders: CircleObstacle[],
+  boosters: Booster[],
+  obstacleFootprints: ObstacleFootprint[],
+  rng: () => number,
+  level: number,
+  obstacleGap: number,
+  structure: GeneratedStructureKind
+) {
+  const boardHeight = getPathBoardHeight(path);
+  const maxY = getFinishClearStartY(boardHeight) - 170;
+  const deflectorCount = level >= 4 ? 3 : 2;
+  const existingRouteIsOpen = hasOpenRoute(
+    walls,
+    path,
+    [...pins, ...bumpers, ...exploders],
+    boosters
+  );
+
+  const tryAddDeflector = (index: number, y: number) => {
+    const band = getPathBandAtY(path, y);
+
+    if (band.width < 118) {
+      return false;
+    }
+
+    const offsetDirection = index % 2 === 0 ? -1 : 1;
+    const structureOffset =
+      index === 0 || structure === "funnel"
+        ? 0
+        : offsetDirection * clamp(band.width * 0.08, 8, 14);
+    const targetX =
+      index === 0
+        ? constrainXToPath(
+            path,
+            y,
+            BOARD_WIDTH / 2,
+            4.5 + BALL_RADIUS + 10
+          )
+        : band.x + structureOffset;
+    const candidate = {
+      id: `pin-route-deflector-${index}`,
+      x: targetX,
+      y,
+      radius: 4.5,
+      strength: 0,
+    };
+    const footprint = {
+      x: candidate.x,
+      y: candidate.y,
+      radius: 16,
+    };
+
+    if (!isPointInsidePath(path, candidate, candidate.radius + BALL_RADIUS + 10)) {
+      return false;
+    }
+
+    if (blocksFinishDropLane(path, candidate, candidate.radius)) {
+      return false;
+    }
+
+    if (!isCircleClearOfWalls(walls, candidate, WALL_TRAP_CLEARANCE)) {
+      return false;
+    }
+
+    if (!hasObstacleSpace(footprint, obstacleFootprints, Math.max(34, obstacleGap - 20))) {
+      return false;
+    }
+
+    if (
+      existingRouteIsOpen &&
+      !hasOpenRoute(walls, path, [...pins, ...bumpers, ...exploders, candidate], boosters)
+    ) {
+      return false;
+    }
+
+    obstacleFootprints.push(footprint);
+    pins.push(candidate);
+
+    return true;
+  };
+
+  for (let index = 0; index < deflectorCount; index += 1) {
+    const targetProgress = deflectorCount === 1 ? 0.38 : 0.3 + index * 0.24;
+    let added = false;
+
+    for (let attempt = 0; attempt < 28; attempt += 1) {
+      const progress = clamp(
+        targetProgress + randomRange(rng, -0.045, 0.045) + (attempt % 5 - 2) * 0.016,
+        0.18,
+        0.72
+      );
+      const pathIndex = clamp(
+        Math.round(progress * (path.length - 1)),
+        2,
+        path.length - 4
+      );
+      const node = path[pathIndex];
+
+      if (!node) {
+        continue;
+      }
+
+      const y = clamp(
+        node.y + randomRange(rng, -28, 42),
+        path[1].y + 74,
+        maxY
+      );
+
+      if (tryAddDeflector(index, y)) {
+        added = true;
+        break;
+      }
+    }
+
+    if (added) {
+      continue;
+    }
+
+    const fallback = path
+      .slice(2, -4)
+      .filter((node) => node.y > path[1].y + 74 && node.y < maxY)
       .sort((a, b) => b.width - a.width)
       .find((node) => tryAddDeflector(index, node.y));
 
@@ -1760,6 +1922,20 @@ function generateMap(
       rng,
       level,
       obstacleGap
+    );
+  } else {
+    addRouteDeflectorPins(
+      path,
+      walls,
+      pins,
+      bumpers,
+      exploders,
+      boosters,
+      obstacleFootprints,
+      rng,
+      level,
+      obstacleGap,
+      structure
     );
   }
 
@@ -2188,6 +2364,8 @@ function createBalls(players: Player[], seed: number): Ball[] {
     blastCooldown: 0,
     bumperCooldown: 0,
     bumperChain: 0,
+    racePhase: randomRange(rng, 0, Math.PI * 2),
+    raceSpeedBonus: 0,
     trail: [],
   }));
 }
@@ -2337,6 +2515,86 @@ function confineBallToPath(ball: Ball, path?: PathNode[]) {
   }
 }
 
+function applyRacePressure(
+  balls: Ball[],
+  dt: number,
+  elapsedSeconds: number
+) {
+  for (const ball of balls) {
+    ball.raceSpeedBonus = 0;
+  }
+
+  const activeBalls = balls
+    .filter((ball) => !ball.finished)
+    .sort((a, b) => b.y - a.y || a.x - b.x);
+
+  if (activeBalls.length < 2) {
+    return;
+  }
+
+  for (let rank = 0; rank < activeBalls.length; rank += 1) {
+    const ball = activeBalls[rank];
+    const gapToLeader = Math.max(0, activeBalls[0].y - ball.y);
+    const gapBehind =
+      rank < activeBalls.length - 1
+        ? Math.max(0, ball.y - activeBalls[rank + 1].y)
+        : RACE_LEADER_PRESSURE_GAP;
+    const draftBoost =
+      rank > 0
+        ? clamp(gapToLeader / RACE_DRAFT_GAP, 0, 1) * RACE_DRAFT_ACCEL
+        : 0;
+    const catchupRatio = clamp(gapToLeader / RACE_DRAFT_GAP, 0, 1);
+    const leaderDrag =
+      rank === 0 && gapBehind < RACE_LEADER_PRESSURE_GAP
+        ? (1 - gapBehind / RACE_LEADER_PRESSURE_GAP) * RACE_LEADER_DRAG
+        : rank === 0
+          ? clamp(gapBehind / (RACE_DRAFT_GAP * 2.4), 0, 1) *
+            RACE_LEADER_BREAKAWAY_DRAG
+          : 0;
+    const swirl =
+      Math.sin(elapsedSeconds * 3.7 + ball.racePhase + ball.y * 0.011) *
+      RACE_SWIRL_ACCEL;
+    const pulse =
+      Math.sin(elapsedSeconds * 5.4 + ball.racePhase) * RACE_PULSE_ACCEL;
+    const draftSpeedBonus =
+      rank > 0
+        ? catchupRatio * RACE_DRAFT_SPEED_BONUS
+        : 0;
+    const pulseSpeedBonus =
+      ((pulse / RACE_PULSE_ACCEL + 1) / 2) * RACE_PULSE_SPEED_BONUS;
+
+    ball.vy = Math.max(-0.2, ball.vy + (draftBoost - leaderDrag + pulse) * dt);
+    if (rank > 0) {
+      ball.vy = Math.max(
+        ball.vy,
+        catchupRatio * RACE_TRAILING_PROGRESS_FLOOR
+      );
+    }
+    ball.raceSpeedBonus = draftSpeedBonus + pulseSpeedBonus;
+    ball.vx += swirl * dt;
+  }
+}
+
+function applyPathFlow(ball: Ball, path: PathNode[] | undefined, dt: number) {
+  if (!path || path.length < 2 || ball.finished) {
+    return;
+  }
+
+  const lookAheadY = ball.y + 42;
+  const band = getPathBandAtY(path, lookAheadY);
+  const offset = band.x - ball.x;
+
+  if (Math.abs(offset) < 6) {
+    return;
+  }
+
+  ball.vx += clamp(
+    offset * PATH_FLOW_ACCEL,
+    -PATH_FLOW_MAX_ACCEL,
+    PATH_FLOW_MAX_ACCEL
+  ) * dt;
+}
+
 function stepSimulation(
   balls: Ball[],
   map: MapLayout,
@@ -2352,6 +2610,8 @@ function stepSimulation(
   const boardHeight = getBoardHeight(map);
   const finishLineY = getFinishLineY(boardHeight);
 
+  applyRacePressure(balls, dt, elapsedSeconds);
+
   for (const ball of balls) {
     if (ball.finished) {
       continue;
@@ -2363,8 +2623,10 @@ function stepSimulation(
     }
 
     ball.vy += gravity * dt;
-    ball.vy = clamp(ball.vy, maxRiseSpeed, maxFallSpeed);
+    const fallSpeedLimit = maxFallSpeed + ball.raceSpeedBonus;
+    ball.vy = clamp(ball.vy, maxRiseSpeed, fallSpeedLimit);
     ball.vx = clamp(ball.vx, -maxSideSpeed, maxSideSpeed);
+    applyPathFlow(ball, map.path, dt);
     ball.vx *= Math.pow(0.996, dt);
     ball.x += ball.vx * dt;
     ball.y += ball.vy * dt;
@@ -2411,7 +2673,19 @@ function stepSimulation(
 
     let pinHit = false;
     for (const pin of map.pins) {
-      pinHit = resolveCircleCollision(ball, pin, 0.78) || pinHit;
+      if (resolveCircleCollision(ball, pin, 0.78)) {
+        if (isRouteDeflectorPin(pin)) {
+          const side =
+            Math.abs(ball.x - pin.x) > 0.8
+              ? Math.sign(ball.x - pin.x)
+              : Math.sign(Math.sin(ball.racePhase)) || 1;
+
+          ball.vx += side * 1.15;
+          ball.vy = Math.max(ball.vy, 1.05);
+        }
+
+        pinHit = true;
+      }
     }
 
     if (pinHit) {
@@ -2459,7 +2733,7 @@ function stepSimulation(
       ball.bumperChain = 0;
     }
     ball.vx = clamp(ball.vx, -maxSideSpeed, maxSideSpeed);
-    ball.vy = clamp(ball.vy, maxRiseSpeed, maxFallSpeed);
+    ball.vy = clamp(ball.vy, maxRiseSpeed, fallSpeedLimit);
     confineBallToPath(ball, map.path);
 
     if (ball.y > finishLineY) {

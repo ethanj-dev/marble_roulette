@@ -45,6 +45,9 @@ function parseArgs(argv) {
     seed: 1,
     lowMaxSeconds: 40,
     maxSeconds: 60,
+    minLateralTravel: 0,
+    minOvertakes: 0,
+    overtakeSampleFrames: 12,
     progressEvery: 100000,
     failFast: false,
     startIndex: 0,
@@ -81,6 +84,15 @@ function parseArgs(argv) {
         break;
       case "--max-seconds":
         options.maxSeconds = Math.max(1, Number.parseFloat(value) || options.maxSeconds);
+        break;
+      case "--min-lateral-travel":
+        options.minLateralTravel = Math.max(0, Number.parseFloat(value) || 0);
+        break;
+      case "--min-overtakes":
+        options.minOvertakes = Math.max(0, Number.parseInt(value, 10) || 0);
+        break;
+      case "--overtake-sample-frames":
+        options.overtakeSampleFrames = Math.max(1, Number.parseInt(value, 10) || options.overtakeSampleFrames);
         break;
       case "--progress-every":
         options.progressEvery = Math.max(0, Number.parseInt(value, 10) || 0);
@@ -215,9 +227,12 @@ function summarizeFailure(trial) {
     `structure=${trial.structure}`,
     `actualStructure=${trial.actualStructure}`,
     `players=${trial.playerCount}`,
+    `reasons=${trial.failureReasons.join(",")}`,
     `finished=${trial.finished}/${trial.playerCount}`,
     `last=${trial.lastSeconds.toFixed(2)}s`,
     `limit=${trial.limitSeconds.toFixed(2)}s`,
+    `overtakes=${trial.overtakes}/${trial.minOvertakes}`,
+    `leastLateral=${trial.leastLateralName}:${trial.leastLateralTravel.toFixed(1)}/${trial.minLateralTravel.toFixed(1)}`,
     `slowest=${trial.slowestName}`,
     `position=(${trial.slowestX.toFixed(1)},${trial.slowestY.toFixed(1)})`,
   ].join(" ");
@@ -246,6 +261,50 @@ function distanceToSegment(point, segment) {
   return Math.hypot(point.x - px, point.y - py);
 }
 
+function getProgressOrder(balls, finishOrder) {
+  const finishRanks = new Map(
+    finishOrder.map((entry, index) => [entry.id, index])
+  );
+
+  return [...balls]
+    .sort((a, b) => {
+      const aFinishRank = finishRanks.get(a.id);
+      const bFinishRank = finishRanks.get(b.id);
+      const aScore =
+        aFinishRank === undefined ? a.y : 1000000 - aFinishRank;
+      const bScore =
+        bFinishRank === undefined ? b.y : 1000000 - bFinishRank;
+
+      if (bScore !== aScore) {
+        return bScore - aScore;
+      }
+
+      return a.id.localeCompare(b.id);
+    })
+    .map((ball) => ball.id);
+}
+
+function countRankMovement(previousOrder, nextOrder) {
+  if (previousOrder.length !== nextOrder.length) {
+    return 0;
+  }
+
+  const previousRanks = new Map(
+    previousOrder.map((id, index) => [id, index])
+  );
+  let movement = 0;
+
+  for (let index = 0; index < nextOrder.length; index += 1) {
+    const previousIndex = previousRanks.get(nextOrder[index]);
+
+    if (previousIndex !== undefined) {
+      movement += Math.abs(previousIndex - index);
+    }
+  }
+
+  return Math.floor(movement / 2);
+}
+
 function runTrial(sim, setRandom, options, index, aggregates) {
   const complexity = options.complexities[index % options.complexities.length];
   const structure = options.structures[
@@ -267,6 +326,12 @@ function runTrial(sim, setRandom, options, index, aggregates) {
   const limitSeconds = lowComplexity ? options.lowMaxSeconds : options.maxSeconds;
   const frameLimit = Math.ceil(limitSeconds * FPS);
   const samples = [];
+  const lateralStats = new Map(
+    balls.map((ball) => [ball.id, { lastX: ball.x, travel: 0 }])
+  );
+  const trackOvertakes = options.minOvertakes > 0 && balls.length > 1;
+  let previousOrder = trackOvertakes ? getProgressOrder(balls, finishOrder) : [];
+  let overtakeCount = 0;
   let frame = 0;
 
   setRandom(random);
@@ -280,6 +345,25 @@ function runTrial(sim, setRandom, options, index, aggregates) {
       (entry) => finishOrder.push({ ...entry, frame }),
       pulses
     );
+
+    for (const ball of balls) {
+      const stats = lateralStats.get(ball.id);
+
+      if (stats) {
+        stats.travel += Math.abs(ball.x - stats.lastX);
+        stats.lastX = ball.x;
+      }
+    }
+
+    if (
+      trackOvertakes &&
+      frame > 0 &&
+      frame % options.overtakeSampleFrames === 0
+    ) {
+      const nextOrder = getProgressOrder(balls, finishOrder);
+      overtakeCount += countRankMovement(previousOrder, nextOrder);
+      previousOrder = nextOrder;
+    }
 
     if (finishOrder.length === balls.length) {
       break;
@@ -304,18 +388,43 @@ function runTrial(sim, setRandom, options, index, aggregates) {
       ? Math.max(...finishOrder.map((entry) => entry.frame))
       : frameLimit + 1;
   const lastSeconds = lastFrame / FPS;
-  const failed = finishOrder.length !== balls.length || lastSeconds > limitSeconds;
+  const lateralTravel = balls.map((ball) => ({
+    id: ball.id,
+    name: ball.name,
+    travel: lateralStats.get(ball.id)?.travel ?? 0,
+  }));
+  const leastLateral = lateralTravel.reduce((least, current) =>
+    current.travel < least.travel ? current : least
+  );
+  const finishFailed = finishOrder.length !== balls.length || lastSeconds > limitSeconds;
+  const lateralFailed =
+    options.minLateralTravel > 0 &&
+    lateralTravel.some((entry) => entry.travel < options.minLateralTravel);
+  const overtakeFailed = trackOvertakes && overtakeCount < options.minOvertakes;
+  const failed = finishFailed || lateralFailed || overtakeFailed;
   const key = String(complexity);
   const aggregate = aggregates.byComplexity[key] ?? {
     completed: 0,
     failed: 0,
     maxSeconds: 0,
+    minLateralTravel: null,
+    minOvertakes: null,
     totalSeconds: 0,
   };
 
   aggregate.completed += failed ? 0 : 1;
   aggregate.failed += failed ? 1 : 0;
   aggregate.maxSeconds = Math.max(aggregate.maxSeconds, lastSeconds);
+  aggregate.minLateralTravel =
+    aggregate.minLateralTravel === null
+      ? leastLateral.travel
+      : Math.min(aggregate.minLateralTravel, leastLateral.travel);
+  if (trackOvertakes) {
+    aggregate.minOvertakes =
+      aggregate.minOvertakes === null
+        ? overtakeCount
+        : Math.min(aggregate.minOvertakes, overtakeCount);
+  }
   aggregate.totalSeconds += Math.min(lastSeconds, limitSeconds);
   aggregates.byComplexity[key] = aggregate;
   aggregates.totalBalls += balls.length;
@@ -375,11 +484,21 @@ function runTrial(sim, setRandom, options, index, aggregates) {
     actualStructure: map.structure,
     ballSeed,
     complexity,
+    failureReasons: [
+      finishFailed ? "finish-time" : null,
+      lateralFailed ? "lateral-travel" : null,
+      overtakeFailed ? "overtakes" : null,
+    ].filter(Boolean),
     finished: finishOrder.length,
     index,
+    leastLateralName: leastLateral.name,
+    leastLateralTravel: leastLateral.travel,
     lastSeconds,
     limitSeconds,
     mapSeed,
+    minLateralTravel: options.minLateralTravel,
+    minOvertakes: trackOvertakes ? options.minOvertakes : 0,
+    overtakes: overtakeCount,
     playerCount,
     slowestName: slowest?.name ?? "unknown",
     slowestX: slowest?.x ?? 0,
