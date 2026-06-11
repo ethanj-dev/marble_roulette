@@ -786,6 +786,11 @@ input[type="range"]::-moz-range-thumb {
   box-shadow: 0 0 16px rgba(75, 225, 255, 0.1);
 }
 
+.saved-map-card[data-active="true"] {
+  border-color: rgba(255, 216, 77, 0.52);
+  box-shadow: 0 0 16px rgba(255, 216, 77, 0.14);
+}
+
 .saved-map-card button:first-child {
   display: grid;
   min-width: 0;
@@ -811,6 +816,29 @@ input[type="range"]::-moz-range-thumb {
 .saved-map-card span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.saved-map-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.edit-map-link {
+  align-self: center;
+  border: 1px solid rgba(75, 225, 255, 0.34);
+  border-radius: var(--radius-sm);
+  background: rgba(75, 225, 255, 0.08);
+  color: var(--cyan);
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.edit-map-link:hover {
+  border-color: var(--cyan);
+  background: rgba(75, 225, 255, 0.14);
 }
 
 .feedback-card {

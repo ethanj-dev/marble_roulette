@@ -19,7 +19,9 @@ const ROUTE_CLEARANCE = BALL_RADIUS + 10;
 const WALL_TRAP_CLEARANCE = BALL_RADIUS * 2 + 18;
 const BUMPER_WALL_CLEARANCE = BALL_RADIUS * 2 + 20;
 const FINISH_DROP_CLEARANCE = BALL_RADIUS + 8;
-const MIN_CUSTOM_PATH_WIDTH = BALL_RADIUS * 2 + 76;
+const MIN_CUSTOM_PASSAGE_WIDTH = BALL_RADIUS * 2 + 24;
+const MIN_CUSTOM_OBSTACLE_PATH_WIDTH = BALL_RADIUS * 2 + 76;
+const MIN_WALL_ATTACHED_BOOSTER_PATH_WIDTH = BALL_RADIUS * 2 + 108;
 const MAX_CUSTOM_PATH_STEP = 96;
 const CUSTOM_PATH_TOP_Y = 88;
 const CUSTOM_PATH_BOTTOM_Y = BOARD_HEIGHT - 132;
@@ -85,8 +87,13 @@ type SavedMapRecord = {
   structure: "custom";
   map: CustomMapLayout;
   createdAt: number;
-  storage: "local";
+  storage: "d1" | "local";
 };
+
+type EditingMapRecord = Pick<
+  SavedMapRecord,
+  "id" | "storage" | "createdAt"
+>;
 
 type Tool =
   | "wall"
@@ -175,6 +182,34 @@ function createGuideWalls(): Segment[] {
   for (let index = 0; index < DEFAULT_GUIDE_PATH.length - 1; index += 1) {
     const current = DEFAULT_GUIDE_PATH[index];
     const next = DEFAULT_GUIDE_PATH[index + 1];
+
+    walls.push({
+      id: randomId("wall"),
+      x1: current.x - current.width / 2,
+      y1: current.y,
+      x2: next.x - next.width / 2,
+      y2: next.y,
+      bounce: 0.86,
+    });
+    walls.push({
+      id: randomId("wall"),
+      x1: current.x + current.width / 2,
+      y1: current.y,
+      x2: next.x + next.width / 2,
+      y2: next.y,
+      bounce: 0.86,
+    });
+  }
+
+  return walls;
+}
+
+function createBoundaryWallsFromPath(path: PathNode[]) {
+  const walls: Segment[] = [];
+
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const current = path[index];
+    const next = path[index + 1];
 
     walls.push({
       id: randomId("wall"),
@@ -341,7 +376,7 @@ function buildCustomPathFromWalls(walls: Segment[]): PathBuildResult {
 
     minWidth = Math.min(minWidth, width);
 
-    if (width < MIN_CUSTOM_PATH_WIDTH) {
+    if (width < MIN_CUSTOM_PASSAGE_WIDTH) {
       narrowSamples += 1;
     }
 
@@ -521,6 +556,61 @@ function isSegmentInsidePath(
   return true;
 }
 
+function getMinPathWidthForSegment(
+  path: PathNode[],
+  segment: Pick<Segment, "x1" | "y1" | "x2" | "y2">
+) {
+  let minWidth = Number.POSITIVE_INFINITY;
+
+  for (let index = 0; index <= 8; index += 1) {
+    const t = index / 8;
+    const point = {
+      x: segment.x1 + (segment.x2 - segment.x1) * t,
+      y: segment.y1 + (segment.y2 - segment.y1) * t,
+    };
+    const band = getPathBandAtY(path, point.y);
+    minWidth = Math.min(minWidth, band.width);
+  }
+
+  return Number.isFinite(minWidth) ? minWidth : 0;
+}
+
+function hasObstacleLaneWidthAtPoint(path: PathNode[], point: Point) {
+  return getPathBandAtY(path, point.y).width >= MIN_CUSTOM_OBSTACLE_PATH_WIDTH;
+}
+
+function hasObstacleLaneWidthForSegment(
+  path: PathNode[],
+  segment: Pick<Segment, "x1" | "y1" | "x2" | "y2">
+) {
+  return getMinPathWidthForSegment(path, segment) >= MIN_CUSTOM_OBSTACLE_PATH_WIDTH;
+}
+
+function isCustomBoosterPlacementSafe(
+  path: PathNode[],
+  walls: Segment[],
+  booster: Booster
+) {
+  if (!hasObstacleLaneWidthForSegment(path, booster)) {
+    return false;
+  }
+
+  if (segmentBlocksFinishDropLane(path, booster, 8)) {
+    return false;
+  }
+
+  const wideEnoughForWallAttachment =
+    getMinPathWidthForSegment(path, booster) >=
+    MIN_WALL_ATTACHED_BOOSTER_PATH_WIDTH;
+  const insideMargin = wideEnoughForWallAttachment ? 0 : BALL_RADIUS + 18;
+
+  if (!isSegmentInsidePath(path, booster, insideMargin)) {
+    return false;
+  }
+
+  return wideEnoughForWallAttachment || isBoosterClearOfWalls(walls, booster);
+}
+
 function blocksFinishDropLane(
   path: PathNode[],
   point: Point,
@@ -674,27 +764,27 @@ function hasOpenRoute(
 function validateCustomMapForSave(map: CustomMapLayout, path: PathNode[]) {
   const pins = map.pins.filter(
     (pin) =>
+      hasObstacleLaneWidthAtPoint(path, pin) &&
       isPointInsidePath(path, pin, pin.radius + BALL_RADIUS + 8) &&
       !blocksFinishDropLane(path, pin, pin.radius) &&
       isCircleClearOfWalls(map.walls, pin, WALL_TRAP_CLEARANCE)
   );
   const bumpers = map.bumpers.filter(
     (bumper) =>
+      hasObstacleLaneWidthAtPoint(path, bumper) &&
       isPointInsidePath(path, bumper, bumper.radius + BALL_RADIUS + 10) &&
       !blocksFinishDropLane(path, bumper, bumper.radius) &&
       isCircleClearOfWalls(map.walls, bumper, BUMPER_WALL_CLEARANCE)
   );
   const exploders = map.exploders.filter(
     (exploder) =>
+      hasObstacleLaneWidthAtPoint(path, exploder) &&
       isPointInsidePath(path, exploder, exploder.radius + BALL_RADIUS + 10) &&
       !blocksFinishDropLane(path, exploder, exploder.radius) &&
       isCircleClearOfWalls(map.walls, exploder, WALL_TRAP_CLEARANCE)
   );
   const boosters = map.boosters.filter(
-    (booster) =>
-      isSegmentInsidePath(path, booster, BALL_RADIUS + 18) &&
-      !segmentBlocksFinishDropLane(path, booster, 8) &&
-      isBoosterClearOfWalls(map.walls, booster)
+    (booster) => isCustomBoosterPlacementSafe(path, map.walls, booster)
   );
   const internalWalls = map.walls.filter(isInternalWall);
   const invalidInternalWall = internalWalls.some(
@@ -998,21 +1088,122 @@ function drawCustomBoard(
   }
 }
 
-function readLocalMaps(): SavedMapRecord[] {
+function isCustomMapLayout(value: unknown): value is CustomMapLayout {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const map = value as CustomMapLayout;
+
+  return (
+    map.version === 1 &&
+    Number.isFinite(map.seed) &&
+    Number.isFinite(map.complexity) &&
+    map.structure === "custom" &&
+    (!("height" in map) || Number.isFinite(map.height)) &&
+    (!("path" in map) || Array.isArray(map.path)) &&
+    Array.isArray(map.walls) &&
+    Array.isArray(map.pins) &&
+    Array.isArray(map.bumpers) &&
+    Array.isArray(map.exploders) &&
+    Array.isArray(map.boosters)
+  );
+}
+
+function normalizeEditableCustomMap(map: CustomMapLayout): CustomMapLayout {
+  const boundaryWalls = map.walls.filter((wall) => !isInternalWall(wall));
+
+  if (boundaryWalls.length >= 2 || !map.path || map.path.length < 2) {
+    return {
+      ...map,
+      height: BOARD_HEIGHT,
+    };
+  }
+
+  return {
+    ...map,
+    height: BOARD_HEIGHT,
+    walls: [
+      ...createBoundaryWallsFromPath(map.path),
+      ...map.walls.filter(isInternalWall),
+    ],
+  };
+}
+
+function savedMapFromValue(value: unknown): SavedMapRecord | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as SavedMapRecord;
+
+  if (!isCustomMapLayout(record.map)) {
+    return null;
+  }
+
+  return {
+    id: String(record.id),
+    name: String(record.name || "커스텀 핀볼 맵"),
+    seed: Number(record.seed),
+    complexity: Math.min(5, Math.max(1, Math.round(Number(record.complexity) || 1))),
+    structure: "custom",
+    map: normalizeEditableCustomMap(record.map),
+    createdAt: Number(record.createdAt) || Date.now(),
+    storage: record.storage === "d1" ? "d1" : "local",
+  };
+}
+
+function readRawLocalMaps(): unknown[] {
   if (typeof window === "undefined") {
     return [];
   }
 
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as SavedMapRecord[]) : [];
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
 }
 
-function writeLocalMaps(records: SavedMapRecord[]) {
+function readLocalMaps(): SavedMapRecord[] {
+  return readRawLocalMaps()
+    .map(savedMapFromValue)
+    .filter((record): record is SavedMapRecord => Boolean(record));
+}
+
+function getStoredRecordId(record: unknown) {
+  if (!record || typeof record !== "object" || !("id" in record)) {
+    return null;
+  }
+
+  return String((record as { id: unknown }).id);
+}
+
+function writeLocalMaps(records: unknown[]) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(records.slice(0, 40)));
+}
+
+function getRequestedEditId() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const rawSearch = isStaticSpa()
+    ? window.location.hash.split("?")[1] ?? ""
+    : window.location.search.replace(/^\?/, "");
+
+  return new URLSearchParams(rawSearch).get("edit");
+}
+
+function formatSavedTime(timestamp: number) {
+  return new Intl.DateTimeFormat("ko-KR", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
 }
 
 export default function CustomMapBuilder() {
@@ -1022,6 +1213,9 @@ export default function CustomMapBuilder() {
   const [dragPreview, setDragPreview] = useState<DragPreview | null>(null);
   const [saveStatus, setSaveStatus] = useState("저장 대기");
   const [isSaving, setIsSaving] = useState(false);
+  const [editableMaps, setEditableMaps] = useState<SavedMapRecord[]>([]);
+  const [editingRecord, setEditingRecord] = useState<EditingMapRecord | null>(null);
+  const [didApplyInitialEdit, setDidApplyInitialEdit] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragStartRef = useRef<Point | null>(null);
   const boundaryWalls = useMemo(
@@ -1055,6 +1249,80 @@ export default function CustomMapBuilder() {
       map.boosters.length,
     ]
   );
+
+  const loadMapForEditing = useCallback((record: SavedMapRecord) => {
+    const editableMap = normalizeEditableCustomMap(record.map);
+
+    setMap(editableMap);
+    setMapName(record.name);
+    setEditingRecord({
+      id: record.id,
+      storage: record.storage,
+      createdAt: record.createdAt,
+    });
+    setSaveStatus(`${record.storage === "d1" ? "D1" : "로컬"} 수정 중`);
+    if (canvasRef.current?.parentElement) {
+      canvasRef.current.parentElement.scrollTop = 0;
+    }
+  }, []);
+
+  const loadEditableMaps = useCallback(async () => {
+    const localMaps = readLocalMaps();
+
+    if (isStaticSpa()) {
+      setEditableMaps(localMaps);
+      return localMaps;
+    }
+
+    try {
+      const response = await fetch("/api/maps");
+
+      if (!response.ok) {
+        throw new Error("D1 is not ready");
+      }
+
+      const data = (await response.json()) as { maps?: unknown[] };
+      const remoteMaps = (data.maps ?? [])
+        .map(savedMapFromValue)
+        .filter((record): record is SavedMapRecord => Boolean(record));
+      const remoteIds = new Set(remoteMaps.map((record) => record.id));
+      const nextMaps = [
+        ...remoteMaps,
+        ...localMaps.filter((record) => !remoteIds.has(record.id)),
+      ];
+
+      setEditableMaps(nextMaps);
+      return nextMaps;
+    } catch {
+      setEditableMaps(localMaps);
+      return localMaps;
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timerId = window.setTimeout(() => {
+      void loadEditableMaps().then((records) => {
+        if (cancelled || didApplyInitialEdit) {
+          return;
+        }
+
+        const editId = getRequestedEditId();
+        const record = records.find((item) => item.id === editId);
+
+        if (record) {
+          loadMapForEditing(record);
+        }
+
+        setDidApplyInitialEdit(true);
+      });
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timerId);
+    };
+  }, [didApplyInitialEdit, loadEditableMaps, loadMapForEditing]);
 
   useEffect(() => {
     const ctx = canvasRef.current?.getContext("2d");
@@ -1175,18 +1443,32 @@ export default function CustomMapBuilder() {
         return;
       }
 
-      if (!isSegmentInsidePath(pathBuild.path, segment, BALL_RADIUS + 18)) {
-        setSaveStatus("회전 막대는 길 안쪽에 배치");
+      if (!hasObstacleLaneWidthForSegment(pathBuild.path, segment)) {
+        setSaveStatus(`회전 막대는 폭 ${MIN_CUSTOM_OBSTACLE_PATH_WIDTH}px 이상에서 가능`);
         return;
       }
 
-      if (segmentBlocksFinishDropLane(pathBuild.path, segment, 8)) {
-        setSaveStatus("피니시 중앙 길은 비워두기");
+      const candidateBooster = { ...segment, id: "preview", strength: 9 };
+
+      if (!isCustomBoosterPlacementSafe(pathBuild.path, map.walls, candidateBooster)) {
+        setSaveStatus(
+          getMinPathWidthForSegment(pathBuild.path, segment) >=
+            MIN_WALL_ATTACHED_BOOSTER_PATH_WIDTH
+            ? "회전 막대가 길/피니시 조건을 벗어남"
+            : "회전 막대가 벽에 너무 가까움"
+        );
         return;
       }
 
-      if (!isBoosterClearOfWalls(map.walls, { ...segment, id: "preview", strength: 9 })) {
-        setSaveStatus("회전 막대가 벽에 너무 가까움");
+      if (
+        !hasOpenRoute(
+          map.walls,
+          pathBuild.path,
+          [...map.pins, ...map.bumpers, ...map.exploders],
+          [...map.boosters, candidateBooster]
+        )
+      ) {
+        setSaveStatus("회전 막대 때문에 열린 길이 없어짐");
         return;
       }
     }
@@ -1275,6 +1557,12 @@ export default function CustomMapBuilder() {
           radius + BALL_RADIUS + (tool === "pin" ? 8 : 10);
         const wallPadding =
           tool === "bumper" ? BUMPER_WALL_CLEARANCE : WALL_TRAP_CLEARANCE;
+
+        if (!hasObstacleLaneWidthAtPoint(pathBuild.path, point)) {
+          setSaveStatus(`${TOOL_LABELS[tool]}은 폭 ${MIN_CUSTOM_OBSTACLE_PATH_WIDTH}px 이상에서 가능`);
+          return;
+        }
+
         const placementPoint = findCirclePlacementPoint(
           pathBuild.path,
           map.walls,
@@ -1335,6 +1623,8 @@ export default function CustomMapBuilder() {
 
   const clearMap = useCallback(() => {
     setMap(createEmptyCustomMap());
+    setEditingRecord(null);
+    setMapName("커스텀 핀볼 맵");
     setSaveStatus("초기화됨");
   }, []);
 
@@ -1377,8 +1667,12 @@ export default function CustomMapBuilder() {
         throw new Error("Static SPA uses local saved maps only");
       }
 
-      const response = await fetch("/api/maps", {
-        method: "POST",
+      const endpoint =
+        editingRecord?.storage === "d1"
+          ? `/api/maps/${encodeURIComponent(editingRecord.id)}`
+          : "/api/maps";
+      const response = await fetch(endpoint, {
+        method: editingRecord?.storage === "d1" ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
@@ -1387,10 +1681,31 @@ export default function CustomMapBuilder() {
         throw new Error("D1 save failed");
       }
 
-      setSaveStatus("D1 저장됨");
+      const data = (await response.json()) as { map?: unknown };
+      const saved = savedMapFromValue(data.map);
+
+      if (!saved) {
+        throw new Error("Saved map payload is invalid");
+      }
+
+      setEditingRecord({
+        id: saved.id,
+        storage: saved.storage,
+        createdAt: saved.createdAt,
+      });
+      setEditableMaps((current) => [
+        saved,
+        ...current.filter((item) => item.id !== saved.id),
+      ]);
+      setSaveStatus(editingRecord?.storage === "d1" ? "D1 수정됨" : "D1 저장됨");
     } catch {
+      const localRecords = readRawLocalMaps();
+      const localId =
+        editingRecord?.storage === "local"
+          ? editingRecord.id
+          : `local-${randomId("custom")}`;
       const localRecord: SavedMapRecord = {
-        id: `local-${randomId("custom")}`,
+        id: localId,
         name: payload.name,
         seed: payload.seed,
         complexity: payload.complexity,
@@ -1399,19 +1714,32 @@ export default function CustomMapBuilder() {
         createdAt: Date.now(),
         storage: "local",
       };
-      writeLocalMaps([localRecord, ...readLocalMaps()]);
-      setSaveStatus("로컬 저장됨");
+      writeLocalMaps([
+        localRecord,
+        ...localRecords.filter((item) => getStoredRecordId(item) !== localRecord.id),
+      ]);
+      setEditingRecord({
+        id: localRecord.id,
+        storage: "local",
+        createdAt: localRecord.createdAt,
+      });
+      setEditableMaps((current) => [
+        localRecord,
+        ...current.filter((item) => item.id !== localRecord.id),
+      ]);
+      setSaveStatus(editingRecord?.storage === "local" ? "로컬 수정됨" : "로컬 저장됨");
     } finally {
       setIsSaving(false);
+      void loadEditableMaps();
     }
-  }, [map, mapName, pathBuild]);
+  }, [editingRecord, loadEditableMaps, map, mapName, pathBuild]);
 
   return (
     <main className="builder-shell">
       <header className="builder-topbar">
         <div className="brand-block">
           <p>CUSTOM PINBALL MAP</p>
-          <h1>커스텀 맵 생성</h1>
+          <h1>{editingRecord ? "커스텀 맵 수정" : "커스텀 맵 생성"}</h1>
         </div>
         <div className="builder-nav">
           <Link href="/">게임으로</Link>
@@ -1423,7 +1751,7 @@ export default function CustomMapBuilder() {
         <section className="builder-panel" aria-label="커스텀 맵 도구">
           <div className="panel-title">
             <h2>맵</h2>
-            <span>커스텀</span>
+            <span>{editingRecord ? "수정 중" : "새 맵"}</span>
           </div>
           <input
             value={mapName}
@@ -1436,8 +1764,34 @@ export default function CustomMapBuilder() {
             disabled={isSaving}
             onClick={() => void saveMap()}
           >
-            {isSaving ? "저장 중" : "맵 저장"}
+            {isSaving ? "저장 중" : editingRecord ? "수정 저장" : "맵 저장"}
           </button>
+
+          <div className="panel-title">
+            <h2>수정</h2>
+            <span>{editableMaps.length}개</span>
+          </div>
+          <div className="saved-list builder-edit-list">
+            {editableMaps.length === 0 ? (
+              <div className="empty-state">수정할 커스텀 맵 없음</div>
+            ) : (
+              editableMaps.map((record) => (
+                <article
+                  className="saved-map-card"
+                  data-active={editingRecord?.id === record.id ? "true" : "false"}
+                  key={record.id}
+                >
+                  <button type="button" onClick={() => loadMapForEditing(record)}>
+                    <strong>{record.name}</strong>
+                    <span>
+                      {record.storage === "d1" ? "D1" : "로컬"} ·{" "}
+                      {formatSavedTime(record.createdAt)}
+                    </span>
+                  </button>
+                </article>
+              ))
+            )}
+          </div>
 
           <div className="panel-title">
             <h2>도구</h2>
@@ -1508,13 +1862,17 @@ export default function CustomMapBuilder() {
                 <dd>좌/우 벽 2개가 y {CUSTOM_PATH_TOP_Y}-{CUSTOM_PATH_BOTTOM_Y} 연결</dd>
               </div>
               <div>
-                <dt>폭</dt>
+                <dt>통과폭</dt>
                 <dd>
-                  {MIN_CUSTOM_PATH_WIDTH}px 이상
+                  {MIN_CUSTOM_PASSAGE_WIDTH}px 이상
                   {pathBuild.minWidth > 0
                     ? ` · 현재 ${Math.round(pathBuild.minWidth)}px`
                     : ""}
                 </dd>
+              </div>
+              <div>
+                <dt>장애물폭</dt>
+                <dd>핀/범퍼/회전은 {MIN_CUSTOM_OBSTACLE_PATH_WIDTH}px 이상</dd>
               </div>
               <div>
                 <dt>꺾임</dt>
@@ -1531,7 +1889,11 @@ export default function CustomMapBuilder() {
               </div>
               <div>
                 <dt>장애물</dt>
-                <dd>벽 여유와 피니시 중앙 차선 확보</dd>
+                <dd>좁은 통로 금지 · 피니시 중앙 차선 확보</dd>
+              </div>
+              <div>
+                <dt>회전</dt>
+                <dd>{MIN_WALL_ATTACHED_BOOSTER_PATH_WIDTH}px 이상이면 벽 부착 가능</dd>
               </div>
               <div>
                 <dt>내부벽</dt>

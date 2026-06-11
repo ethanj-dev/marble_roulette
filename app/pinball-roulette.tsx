@@ -189,6 +189,8 @@ const ROUTE_CLEARANCE = BALL_RADIUS + 10;
 const WALL_TRAP_CLEARANCE = BALL_RADIUS * 2 + 18;
 const BUMPER_WALL_CLEARANCE = BALL_RADIUS * 2 + 20;
 const MIN_BRANCH_LANE_WIDTH = BALL_RADIUS * 2 + 44;
+const MIN_CUSTOM_OBSTACLE_PATH_WIDTH = BALL_RADIUS * 2 + 76;
+const MIN_WALL_ATTACHED_BOOSTER_PATH_WIDTH = BALL_RADIUS * 2 + 108;
 const FINISH_DROP_CLEARANCE = BALL_RADIUS + 8;
 const MAX_PATH_HORIZONTAL_STEP = 76;
 const MAX_HIGH_COMPLEXITY_PATH_STEP = 88;
@@ -447,6 +449,36 @@ function segmentBlocksFinishDropLane(
   return false;
 }
 
+function getMinPathWidthForSegment(
+  path: PathNode[],
+  segment: Pick<Segment, "x1" | "y1" | "x2" | "y2">
+) {
+  let minWidth = Number.POSITIVE_INFINITY;
+
+  for (let index = 0; index <= 8; index += 1) {
+    const t = index / 8;
+    const point = {
+      x: segment.x1 + (segment.x2 - segment.x1) * t,
+      y: segment.y1 + (segment.y2 - segment.y1) * t,
+    };
+    const band = getPathBandAtY(path, point.y);
+    minWidth = Math.min(minWidth, band.width);
+  }
+
+  return Number.isFinite(minWidth) ? minWidth : 0;
+}
+
+function hasCustomObstacleLaneWidthAtPoint(path: PathNode[], point: Point) {
+  return getPathBandAtY(path, point.y).width >= MIN_CUSTOM_OBSTACLE_PATH_WIDTH;
+}
+
+function hasCustomObstacleLaneWidthForSegment(
+  path: PathNode[],
+  segment: Pick<Segment, "x1" | "y1" | "x2" | "y2">
+) {
+  return getMinPathWidthForSegment(path, segment) >= MIN_CUSTOM_OBSTACLE_PATH_WIDTH;
+}
+
 function hasBranchLaneClearance(
   path: PathNode[],
   segments: Pick<Segment, "x1" | "y1" | "x2" | "y2">[]
@@ -521,6 +553,31 @@ function isBoosterClearOfWalls(
   };
 
   return isCircleClearOfWalls(walls, center, padding);
+}
+
+function isCustomBoosterPlacementSafe(
+  path: PathNode[],
+  walls: Segment[],
+  booster: Booster
+) {
+  if (!hasCustomObstacleLaneWidthForSegment(path, booster)) {
+    return false;
+  }
+
+  if (segmentBlocksFinishDropLane(path, booster, 8)) {
+    return false;
+  }
+
+  const wideEnoughForWallAttachment =
+    getMinPathWidthForSegment(path, booster) >=
+    MIN_WALL_ATTACHED_BOOSTER_PATH_WIDTH;
+  const insideMargin = wideEnoughForWallAttachment ? 0 : BALL_RADIUS + 18;
+
+  if (!isSegmentInsidePath(path, booster, insideMargin)) {
+    return false;
+  }
+
+  return wideEnoughForWallAttachment || isBoosterClearOfWalls(walls, booster);
 }
 
 function getCircleRouteClearance(circle: CircleObstacle) {
@@ -3066,11 +3123,13 @@ function sanitizeMapLayout(map: MapLayout): MapLayout {
   });
   const pins = map.pins.filter(
     (pin) =>
+      (map.structure !== "custom" || hasCustomObstacleLaneWidthAtPoint(path, pin)) &&
       !blocksFinishDropLane(path, pin, pin.radius) &&
       isCircleClearOfWalls(walls, pin, WALL_TRAP_CLEARANCE)
   );
   const bumpers = map.bumpers.filter(
     (bumper) =>
+      (map.structure !== "custom" || hasCustomObstacleLaneWidthAtPoint(path, bumper)) &&
       !blocksFinishDropLane(path, bumper, bumper.radius) &&
       isCircleClearOfWalls(walls, bumper, BUMPER_WALL_CLEARANCE)
   );
@@ -3083,13 +3142,16 @@ function sanitizeMapLayout(map: MapLayout): MapLayout {
   }, []);
   const exploders = map.exploders.filter(
     (exploder) =>
+      (map.structure !== "custom" || hasCustomObstacleLaneWidthAtPoint(path, exploder)) &&
       !blocksFinishDropLane(path, exploder, exploder.radius) &&
       isCircleClearOfWalls(walls, exploder, WALL_TRAP_CLEARANCE)
   );
   const boosters = map.boosters.filter(
     (booster) =>
-      !segmentBlocksFinishDropLane(path, booster, 8) &&
-      isBoosterClearOfWalls(walls, booster)
+      map.structure === "custom"
+        ? isCustomBoosterPlacementSafe(path, walls, booster)
+        : !segmentBlocksFinishDropLane(path, booster, 8) &&
+          isBoosterClearOfWalls(walls, booster)
   );
   const safeObstacles = makeObstaclesRouteSafe(walls, path, {
     pins,
@@ -4009,13 +4071,23 @@ export default function PinballRoulette() {
                       {formatSavedTime(record.createdAt)}
                     </span>
                   </button>
-                  <button
-                    type="button"
-                    className="delete-button"
-                    onClick={() => void deleteMap(record)}
-                  >
-                    삭제
-                  </button>
+                  <div className="saved-map-actions">
+                    {record.structure === "custom" ? (
+                      <Link
+                        className="edit-map-link"
+                        href={`/custom?edit=${encodeURIComponent(record.id)}`}
+                      >
+                        수정
+                      </Link>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="delete-button"
+                      onClick={() => void deleteMap(record)}
+                    >
+                      삭제
+                    </button>
+                  </div>
                 </article>
               ))
             )}
