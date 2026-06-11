@@ -19,7 +19,8 @@ const ROUTE_CLEARANCE = BALL_RADIUS + 10;
 const WALL_TRAP_CLEARANCE = BALL_RADIUS * 2 + 18;
 const BUMPER_WALL_CLEARANCE = BALL_RADIUS * 2 + 20;
 const FINISH_DROP_CLEARANCE = BALL_RADIUS + 8;
-const MIN_CUSTOM_PASSAGE_WIDTH = BALL_RADIUS * 2 + 24;
+const MIN_CUSTOM_PASSAGE_WIDTH = 35;
+const CUSTOM_ROUTE_CLEARANCE = BALL_RADIUS + 4;
 const MIN_CUSTOM_OBSTACLE_PATH_WIDTH = BALL_RADIUS * 2 + 76;
 const MIN_WALL_ATTACHED_BOOSTER_PATH_WIDTH = BALL_RADIUS * 2 + 108;
 const MAX_CUSTOM_PATH_STEP = 96;
@@ -681,7 +682,7 @@ function hasFinishDropLane(walls: Segment[], path: PathNode[]) {
     }
 
     if (
-      walls.some((wall) => distanceToSegment(point, wall) <= ROUTE_CLEARANCE)
+      walls.some((wall) => distanceToSegment(point, wall) <= CUSTOM_ROUTE_CLEARANCE)
     ) {
       return false;
     }
@@ -704,27 +705,28 @@ function hasOpenRoute(
 ) {
   const stepX = 10;
   const stepY = 16;
+  const clearance = CUSTOM_ROUTE_CLEARANCE;
   let reachable: Point[] = [];
   let started = false;
 
   for (let y = path[0].y + 26; y <= BOARD_HEIGHT - 64; y += stepY) {
     const band = getPathBandAtY(path, y);
-    const minX = band.x - band.width / 2 + ROUTE_CLEARANCE;
-    const maxX = band.x + band.width / 2 - ROUTE_CLEARANCE;
+    const minX = band.x - band.width / 2 + clearance + 1;
+    const maxX = band.x + band.width / 2 - clearance - 1;
     const nodes: Point[] = [];
 
     for (let x = minX; x <= maxX; x += stepX) {
       const point = { x, y };
 
       if (
-        walls.every((wall) => distanceToSegment(point, wall) > ROUTE_CLEARANCE) &&
+        walls.every((wall) => distanceToSegment(point, wall) > clearance) &&
         circles.every(
           (circle) =>
             Math.hypot(point.x - circle.x, point.y - circle.y) >
             circle.radius + getCircleRouteClearance(circle)
         ) &&
         boosters.every(
-          (booster) => distanceToSegment(point, booster) > ROUTE_CLEARANCE + 4
+          (booster) => distanceToSegment(point, booster) > clearance + 4
         )
       ) {
         nodes.push(point);
