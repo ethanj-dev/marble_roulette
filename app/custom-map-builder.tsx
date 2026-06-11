@@ -26,6 +26,7 @@ const CUSTOM_PATH_BOTTOM_Y = BOARD_HEIGHT - 132;
 const CUSTOM_PATH_SAMPLE_STEP = 44;
 const CUSTOM_WALL_SAMPLE_TOLERANCE = 18;
 const MAX_CUSTOM_MISSING_SAMPLES = 1;
+const MIN_INTERNAL_WALL_LANE_WIDTH = BALL_RADIUS * 2 + 44;
 
 type Point = {
   x: number;
@@ -87,16 +88,24 @@ type SavedMapRecord = {
   storage: "local";
 };
 
-type Tool = "wall" | "pin" | "bumper" | "exploder" | "booster" | "erase";
+type Tool =
+  | "wall"
+  | "innerWall"
+  | "pin"
+  | "bumper"
+  | "exploder"
+  | "booster"
+  | "erase";
 
 type DragPreview = {
-  tool: Extract<Tool, "wall" | "booster">;
+  tool: Extract<Tool, "wall" | "innerWall" | "booster">;
   start: Point;
   end: Point;
 };
 
 const TOOL_LABELS: Record<Tool, string> = {
   wall: "경계벽",
+  innerWall: "내부 벽",
   pin: "핀",
   bumper: "범퍼",
   exploder: "폭발",
@@ -139,6 +148,10 @@ function randomId(prefix: string) {
   }
 
   return `${prefix}-${Date.now()}-${Math.round(Math.random() * 100000)}`;
+}
+
+function isInternalWall(wall: Pick<Segment, "id">) {
+  return wall.id.startsWith("inner-wall-");
 }
 
 function createEmptyCustomMap(): CustomMapLayout {
@@ -541,6 +554,33 @@ function segmentBlocksFinishDropLane(
   return false;
 }
 
+function hasInternalWallLaneClearance(
+  path: PathNode[],
+  segments: Pick<Segment, "x1" | "y1" | "x2" | "y2">[]
+) {
+  return segments.every((segment) => {
+    for (let index = 0; index <= 16; index += 1) {
+      const t = index / 16;
+      const point = {
+        x: segment.x1 + (segment.x2 - segment.x1) * t,
+        y: segment.y1 + (segment.y2 - segment.y1) * t,
+      };
+      const band = getPathBandAtY(path, point.y);
+      const leftBoundary = band.x - band.width / 2;
+      const rightBoundary = band.x + band.width / 2;
+
+      if (
+        point.x - leftBoundary < MIN_INTERNAL_WALL_LANE_WIDTH ||
+        rightBoundary - point.x < MIN_INTERNAL_WALL_LANE_WIDTH
+      ) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+}
+
 function hasFinishDropLane(walls: Segment[], path: PathNode[]) {
   for (let y = getFinishClearStartY(); y <= getFinishLineY(); y += 24) {
     const band = getPathBandAtY(path, y);
@@ -656,6 +696,12 @@ function validateCustomMapForSave(map: CustomMapLayout, path: PathNode[]) {
       !segmentBlocksFinishDropLane(path, booster, 8) &&
       isBoosterClearOfWalls(map.walls, booster)
   );
+  const internalWalls = map.walls.filter(isInternalWall);
+  const invalidInternalWall = internalWalls.some(
+    (wall) =>
+      !isSegmentInsidePath(path, wall, BALL_RADIUS + 8) ||
+      segmentBlocksFinishDropLane(path, wall, 8)
+  );
   const removedObstacleCount =
     map.pins.length -
     pins.length +
@@ -665,6 +711,22 @@ function validateCustomMapForSave(map: CustomMapLayout, path: PathNode[]) {
     exploders.length +
     map.boosters.length -
     boosters.length;
+
+  if (invalidInternalWall) {
+    return {
+      ok: false,
+      message: "내부 벽이 길/피니시 조건을 벗어남",
+      map,
+    };
+  }
+
+  if (!hasInternalWallLaneClearance(path, internalWalls)) {
+    return {
+      ok: false,
+      message: "내부 벽 주변 통로가 너무 좁음",
+      map,
+    };
+  }
 
   if (removedObstacleCount > 0) {
     return {
@@ -845,14 +907,15 @@ function drawCustomBoard(
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   for (const wall of map.walls) {
-    ctx.strokeStyle = "#1d2336";
-    ctx.lineWidth = 16;
+    const internal = isInternalWall(wall);
+    ctx.strokeStyle = internal ? "#302713" : "#1d2336";
+    ctx.lineWidth = internal ? 14 : 16;
     ctx.beginPath();
     ctx.moveTo(wall.x1, wall.y1);
     ctx.lineTo(wall.x2, wall.y2);
     ctx.stroke();
-    ctx.strokeStyle = "#93a7d8";
-    ctx.globalAlpha = 0.55;
+    ctx.strokeStyle = internal ? "#ffd84d" : "#93a7d8";
+    ctx.globalAlpha = internal ? 0.78 : 0.55;
     ctx.lineWidth = 3;
     ctx.stroke();
     ctx.globalAlpha = 1;
@@ -925,8 +988,12 @@ function drawCustomBoard(
     drawGlowLine(
       ctx,
       { x1: preview.start.x, y1: preview.start.y, x2: preview.end.x, y2: preview.end.y },
-      preview.tool === "booster" ? "#32f7ff" : "#fff2a1",
-      preview.tool === "booster" ? 8 : 5
+      preview.tool === "booster"
+        ? "#32f7ff"
+        : preview.tool === "innerWall"
+          ? "#ffd84d"
+          : "#fff2a1",
+      preview.tool === "booster" ? 8 : preview.tool === "innerWall" ? 6 : 5
     );
   }
 }
@@ -957,17 +1024,36 @@ export default function CustomMapBuilder() {
   const [isSaving, setIsSaving] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragStartRef = useRef<Point | null>(null);
-  const pathBuild = useMemo(() => buildCustomPathFromWalls(map.walls), [map.walls]);
+  const boundaryWalls = useMemo(
+    () => map.walls.filter((wall) => !isInternalWall(wall)),
+    [map.walls]
+  );
+  const internalWalls = useMemo(
+    () => map.walls.filter(isInternalWall),
+    [map.walls]
+  );
+  const pathBuild = useMemo(
+    () => buildCustomPathFromWalls(boundaryWalls),
+    [boundaryWalls]
+  );
 
   const counts = useMemo(
     () => ({
-      walls: map.walls.length,
+      boundaryWalls: boundaryWalls.length,
+      internalWalls: internalWalls.length,
       pins: map.pins.length,
       bumpers: map.bumpers.length,
       exploders: map.exploders.length,
       boosters: map.boosters.length,
     }),
-    [map]
+    [
+      boundaryWalls.length,
+      internalWalls.length,
+      map.pins.length,
+      map.bumpers.length,
+      map.exploders.length,
+      map.boosters.length,
+    ]
   );
 
   useEffect(() => {
@@ -1030,9 +1116,57 @@ export default function CustomMapBuilder() {
 
     const segment = { x1: start.x, y1: start.y, x2: end.x, y2: end.y };
 
+    if (
+      tool === "wall" &&
+      pathBuild.ready &&
+      isSegmentInsidePath(pathBuild.path, segment, 14)
+    ) {
+      setSaveStatus("내부 구조는 내부 벽 도구 사용");
+      return;
+    }
+
     if (tool === "wall" && Math.abs(end.y - start.y) < 32) {
       setSaveStatus("경계벽은 위아래 방향 필요");
       return;
+    }
+
+    if (tool === "innerWall") {
+      if (!pathBuild.ready) {
+        setSaveStatus("먼저 경계벽으로 길 만들기");
+        return;
+      }
+
+      if (!isSegmentInsidePath(pathBuild.path, segment, BALL_RADIUS + 8)) {
+        setSaveStatus("내부 벽은 길 안쪽에 배치");
+        return;
+      }
+
+      if (segmentBlocksFinishDropLane(pathBuild.path, segment, 8)) {
+        setSaveStatus("피니시 중앙 길은 비워두기");
+        return;
+      }
+
+      if (!hasInternalWallLaneClearance(pathBuild.path, [segment])) {
+        setSaveStatus("내부 벽 주변 통로가 너무 좁음");
+        return;
+      }
+
+      const candidateWalls = [
+        ...map.walls,
+        { ...segment, id: "inner-wall-preview", bounce: 0.9 },
+      ];
+
+      if (
+        !hasOpenRoute(
+          candidateWalls,
+          pathBuild.path,
+          [...map.pins, ...map.bumpers, ...map.exploders],
+          map.boosters
+        )
+      ) {
+        setSaveStatus("내부 벽 때문에 열린 길이 없어짐");
+        return;
+      }
     }
 
     if (tool === "booster") {
@@ -1058,11 +1192,9 @@ export default function CustomMapBuilder() {
     }
 
     if (tool === "wall") {
-      const isInternalWall =
-        pathBuild.ready && isSegmentInsidePath(pathBuild.path, segment, 14);
-      setSaveStatus(
-        isInternalWall ? "내부 벽은 저장 검증에서 막힐 수 있음" : "경계벽 추가됨"
-      );
+      setSaveStatus("경계벽 추가됨");
+    } else if (tool === "innerWall") {
+      setSaveStatus("내부 벽 추가됨");
     } else {
       setSaveStatus("회전 막대 추가됨");
     }
@@ -1080,6 +1212,23 @@ export default function CustomMapBuilder() {
               x2: end.x,
               y2: end.y,
               bounce: 0.86,
+            },
+          ],
+        };
+      }
+
+      if (tool === "innerWall") {
+        return {
+          ...current,
+          walls: [
+            ...current.walls,
+            {
+              id: randomId("inner-wall"),
+              x1: start.x,
+              y1: start.y,
+              x2: end.x,
+              y2: end.y,
+              bounce: 0.9,
             },
           ],
         };
@@ -1160,7 +1309,7 @@ export default function CustomMapBuilder() {
     (event: ReactPointerEvent<HTMLCanvasElement>) => {
       const start = dragStartRef.current;
 
-      if (!start || (tool !== "wall" && tool !== "booster")) {
+      if (!start || (tool !== "wall" && tool !== "innerWall" && tool !== "booster")) {
         return;
       }
 
@@ -1384,17 +1533,32 @@ export default function CustomMapBuilder() {
                 <dt>장애물</dt>
                 <dd>벽 여유와 피니시 중앙 차선 확보</dd>
               </div>
+              <div>
+                <dt>내부벽</dt>
+                <dd>경로 안쪽 · 좌우 통로 {MIN_INTERNAL_WALL_LANE_WIDTH}px 이상</dd>
+              </div>
             </dl>
           </div>
 
           <div className="panel-title">
             <h2>구성</h2>
-            <span>{counts.walls + counts.pins + counts.bumpers + counts.exploders + counts.boosters}</span>
+            <span>
+              {counts.boundaryWalls +
+                counts.internalWalls +
+                counts.pins +
+                counts.bumpers +
+                counts.exploders +
+                counts.boosters}
+            </span>
           </div>
           <dl className="summary-grid">
             <div>
               <dt>경계벽</dt>
-              <dd>{counts.walls}</dd>
+              <dd>{counts.boundaryWalls}</dd>
+            </div>
+            <div>
+              <dt>내부벽</dt>
+              <dd>{counts.internalWalls}</dd>
             </div>
             <div>
               <dt>핀</dt>

@@ -1,6 +1,6 @@
 # Pinball Roulette Agent Handoff
 
-Last updated: 2026-06-10
+Last updated: 2026-06-11
 
 This file is the required handoff source for Codex, Claude, and any other agent or PC continuing this project. Read this before changing code.
 
@@ -59,6 +59,7 @@ Players are counted by comma-separated non-empty names only. Example: `나, 하�
 - Custom map page exists at `/custom`.
 - Custom map builder treats drawn walls as editable route boundary walls and derives saved `path` metadata from left/right wall intersections.
 - Custom map builder tolerates small boundary-wall endpoint/sample gaps, snaps circular obstacles to the nearest safe same-height in-path position, and shows minimum save conditions in the right status panel.
+- Custom map builder has a separate `내부 벽` tool for in-path divider/island geometry. Boundary walls still define the outer route, while internal walls are stored in `walls` with an `inner-wall-*` id prefix, drawn in yellow, and ignored when deriving the outer `path`.
 - GitHub Pages static SPA build exists and outputs to `dist/github-pages`.
 - The static SPA uses hash routing (`#/custom`) and localStorage-only map saves.
 - Local `GET /api/maps` returns `{ maps: [] }` with HTTP 200 when the local D1 binding/table is unavailable, avoiding console noise while preserving the API path.
@@ -91,6 +92,7 @@ Players are counted by comma-separated non-empty names only. Example: `나, 하�
 - `MIN_OBSTACLE_GAP = 64`
 - `getObstacleGap(complexity)` relaxes obstacle spacing gradually at higher complexity while preserving route checks.
 - `MIN_BRANCH_LANE_WIDTH = BALL_RADIUS * 2 + 44`
+- `MIN_INTERNAL_WALL_LANE_WIDTH = BALL_RADIUS * 2 + 44` in the custom builder requires internal divider/island walls to leave ball-sized left/right lanes inside the outer path.
 - `DEFAULT_BOARD_HEIGHT = 1420`
 - `MAX_PATH_HORIZONTAL_STEP = 76` limits random path point side-to-side movement so generated walls do not create bounce-back pockets.
 - `MAX_HIGH_COMPLEXITY_PATH_STEP = 88` lets higher-complexity paths use stronger side-to-side curves while keeping per-segment movement capped.
@@ -134,9 +136,11 @@ Custom map helpers in `app/custom-map-builder.tsx`:
 
 - `buildCustomPathFromWalls(...)`: samples drawn boundary walls from top to bottom and derives playable `path` metadata from the outer left/right wall intersections.
   It tolerates small y-sample/endpoint gaps and reports missing/narrow/steep sample counts for the status panel.
+- `isInternalWall(...)`: identifies custom internal divider/island walls by `inner-wall-*` ids so those walls collide in-game but do not alter outer route derivation.
+- `hasInternalWallLaneClearance(...)`: requires custom internal walls to stay far enough from both outer route boundaries before saving.
 - `findCirclePlacementPoint(...)`: snaps pins, bumpers, and exploders to the nearest same-height safe in-path x-position when the click is slightly outside the required wall/path clearance.
 - `validateCustomMapForSave(...)`: blocks saving if the custom path is incomplete, too narrow, too sharply bent, has unsafe obstacles, closes the finish drop lane, or lacks an open route.
-- The custom builder's `경계벽` tool is for route boundaries. Extra interior wall segments may be drawn, but saving fails if they block the route or finish lane.
+- The custom builder's `경계벽` tool is for route boundaries. Use `내부 벽` for in-path dividers or closed island/triangle geometry; saving fails if internal walls leave too little lane clearance, block the finish lane, or remove the open top-to-bottom route.
 
 Physics notes:
 
@@ -164,6 +168,7 @@ Physics notes:
 - 2026-06-10: Added strict simulator gates for minimum lateral travel and rank reversals, added route-flow velocity, multiplayer race pressure/drafting/breakaway controls, generic route deflectors for non-zigzag maps, and board-center targeting for first zigzag deflectors so generated maps avoid straight drops and produce repeated overtakes without ball relocation.
 - 2026-06-10: Changed local `GET /api/maps` to return an empty map list with HTTP 200 when D1 is unavailable, keeping local rendering console-clean while retaining D1 save behavior for configured deployments.
 - 2026-06-10: Improved the custom map builder by tolerating small boundary-wall sampling gaps, snapping circular obstacles to nearby safe in-path positions, and showing minimum path/obstacle conditions beside the route status so users can see why a custom map is not ready.
+- 2026-06-11: Added a separate custom-builder `내부 벽` tool for horizontal/diagonal in-path divider and closed island geometry, kept internal walls out of outer path derivation, added internal-wall lane-clearance validation/status text, split boundary/internal wall counts, and rendered internal walls in yellow.
 - 2026-06-09: Optimized `npm run simulate` by compiling the game module directly instead of using a VM context, and added `--target-balls` for million-scale ball simulation runs.
 - 2026-06-09: Changed rotating booster collision from forced upward kicks to downward progress assists so booster loops do not keep balls cycling in the same section.
 - 2026-06-09: Added wall-contact damping that limits excessive upward rebounds from path and internal walls without relocating balls.
@@ -205,7 +210,7 @@ Physics notes:
 - Test more random seeds visually, especially complexity 4-5, to ensure maps still have enough fun obstacles after safety pruning.
 - Consider adding deterministic generation tests for route safety if the project gets a test framework.
 - Consider adding a visible "map safety" debug overlay only for development, not in the user-facing UI.
-- Improve custom map validation so manually drawn custom walls can define multi-branch paths more deliberately.
+- Consider adding closed-island grouping/fill previews for custom internal walls so triangle interiors can be visibly shaded as non-playable space.
 - If deploying with Sites, refresh `public/screenshot.jpeg` after significant visual changes.
 
 ## Deployment Notes
@@ -242,6 +247,7 @@ The in-app browser tool has repeatedly failed in this Windows environment with:
 On 2026-06-10, the Browser plugin skill also could not load because
 `scripts/browser-client.mjs` was missing from the enabled Browser plugin folder.
 On 2026-06-10, a later Browser runtime attempt failed with `Browser is not available: iab`.
+On 2026-06-11, the Browser runtime connected successfully and was used for `/custom` interaction QA.
 When the in-app browser is unavailable, continue validation with headless Chrome
 screenshots, for example:
 
@@ -266,3 +272,4 @@ Then inspect the generated screenshot and refresh `public/screenshot.jpeg` if th
 - 2026-06-10: After the custom boundary-wall builder rework, `npm run lint`, `npm run build`, and `npm run build:gh-pages` passed. A direct custom-builder validation confirmed sample boundary walls derive a ready path with `minWidth=130` and pass `validateCustomMapForSave`; a sample custom map simulation finished 8/8 balls. Headless Chrome rendered `/custom` with the new `경계벽` tool and route status panel.
 - 2026-06-10: After route-flow/race-pressure/deflector tuning, `npm run simulate -- --target-balls=1000000 --players=1,2,3,5,8,12,20,30,30,30,30,30 --min-overtakes=3 --min-lateral-travel=24 --overtake-sample-frames=6 --progress-every=20000 --fail-fast` passed with `totalBalls=1000007`, `failureCount=0`, min lateral travel by complexity: c1 55.53px, c2 101.00px, c3 100.42px, c4 135.89px, c5 131.98px; min overtakes by complexity: c1 3, c2 4, c3 5, c4 5, c5 6; and max finish times: c1 5.42s, c2 9.92s, c3 10.55s, c4 13.27s, c5 15.42s.
 - 2026-06-10: Final checks after route-flow/race-pressure/API fallback changes: `npm run lint`, `npm run build`, and `npm run build:gh-pages` passed; `GET /api/maps` returned HTTP 200 with an empty local list when D1 was unavailable; headless Chrome rendered `http://localhost:3000/`, captured a screenshot, clicked `시작`, completed a 3-player race, updated rankings, and reported no relevant console warnings/errors.
+- 2026-06-11: After adding the custom `내부 벽` tool, `npm run lint`, `npm run build`, and `npm run build:gh-pages` passed. Browser QA rendered `http://localhost:3000/custom`, drew two wide boundary walls and a three-segment triangular internal wall, confirmed status `OK`, minimum width `280`, counts `경계벽 2` and `내부벽 3`, saved the map locally, captured a screenshot, and reported no relevant console warnings/errors.
